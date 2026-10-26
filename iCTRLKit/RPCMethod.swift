@@ -15,7 +15,7 @@ struct RPCMethodDef: Encodable {
 }
 
 struct RPCMethodRegistry {
-    static let methods: [RPCMethodDef] = NativeRPCMethodDefinitions.methods + FileTransferRPCMethods.methods + DevelopmentRPCMethods.methods + [
+    static let methods: [RPCMethodDef] = NativeRPCMethodDefinitions.methods + FileTransferRPCMethods.methods + DevelopmentRPCMethods.methods + QuietRPCMethodDefinitions.methods + [
         RPCMethodDef(
             name: "config",
             description: "Read or update server settings and manage authorized sessions. With no params: returns current config plus the list of authorized sessions (client name, masked token prefix, granted/expiry times). Pass allow_remote_access and/or listen_port to change settings (persisted; server restarts, dropping the connection — reconnect at the returned address). Pass revoke_session_id to remove one session, or clear_sessions=true to revoke ALL tokens (including your own). Pass stop_server=true to SHUT DOWN the service (stops listening after replying; re-launch the runner to restart — tokens are preserved so no re-auth is needed).",
@@ -359,7 +359,11 @@ struct RPCMethodRegistry {
                 "description": m.description,
                 "returns": m.returns,
             ]
-            dict["params"] = m.params.map { p in
+            let visibleParams = QuietRPCMethodDefinitions.requiresUIGate(m.name)
+                ? m.params + [RPCParamDef(name: "automation_session", type: "string", required: false,
+                    description: "Required for a registered automation token: random lease_id from automation_begin after quiet_verified. Invalid/expired values never fall back to manual.")]
+                : m.params
+            dict["params"] = visibleParams.map { p in
                 [
                     "name": p.name,
                     "type": p.type,
@@ -398,6 +402,7 @@ struct RPCMethodRegistry {
     /// actually implements.
     static let capabilityTags: [String] = [
         "native_clipboard_v1", "runtime_status_v1", "foreground_keep_awake_v1", "file_transfer_v1",
+        "quiet_control_v1",  // supported but disabled until automation_config opt-in and real Focus validation
         "envelope_v1",         // /pair + encrypted /rpc envelopes (HMAC-SHA256)
         "stream_ticket",       // stream_ticket RPC → single-use ?ticket= for /stream + /logs
         "video_stream",        // GET /stream (H.264-in-MPEG-TS live screen)

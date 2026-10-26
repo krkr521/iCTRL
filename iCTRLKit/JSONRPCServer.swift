@@ -4,6 +4,7 @@ import Network
 
 class JSONRPCServer {
     private let fileTransfers = FileTransferStore()
+    private let quietControl: QuietControl
     private var listener: NWListener?
     private var connections: [NWConnection] = []
     /// Connections handed off to a long-lived streamer (video) — the base receive
@@ -31,7 +32,9 @@ class JSONRPCServer {
     private let queue = DispatchQueue(label: "com.openminis.ictrl.server")
     private(set) var isRunning = false
 
-    var onRPCRequest: ((String, [String: JSONValue]?, @escaping ([String: JSONValue]?, JSONRPCError?) -> Void) -> Void)?
+    var onRPCRequest: ((String, [String: JSONValue]?, String, @escaping ([String: JSONValue]?, JSONRPCError?) -> Void) -> Void)?
+    /// Must enqueue on the Runner's normal UI lane; launch acceptance is not Focus verification.
+    var onQuietShortcutURL: ((URL) -> Void)?
     var onStateChange: ((Bool) -> Void)?
     /// Hand off an authorized connection to the video streamer (host owns the
     /// frame grabber + VideoStreamer). The server stops managing this connection
@@ -65,6 +68,14 @@ class JSONRPCServer {
     init(port: UInt16 = 8200, localOnly: Bool = false) {
         self.port = port
         self.localOnly = localOnly
+        self.quietControl = QuietControl.persistent(port: port)
+    }
+
+    /// Second gate, called just before queued Runner UI execution.
+    func quietGateForDequeued(owner: String, method: String, session: String?) -> JSONRPCError? {
+        guard QuietRPCMethodDefinitions.requiresUIGate(method) else { return nil }
+        return quietControl.gate(owner: owner, method: method, session: session,
+                                 now: ProcessInfo.processInfo.systemUptime).map(JSONRPCError.serverError)
     }
 
     func start() throws {
@@ -510,12 +521,14 @@ class JSONRPCServer {
             body = data.subdata(in: headerEnd..<end)
         }
 
-        route(method: method, path: path, headers: headers, body: body, connection: connection)
+        route(method: method, path: path, headers: headers, headerBytes: headerData.count,
+              body: body, connection: connection)
     }
 
     // MARK: - Routing
 
-    private func route(method: String, path: String, headers: [String: String], body: Data?, connection: NWConnection) {
+    private func route(method: String, path: String, headers: [String: String], headerBytes: Int,
+                       body: Data?, connection: NWConnection) {
         // Split off any query string so path matching is exact.
         let rawPath = path
         let pathOnly = path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path
@@ -618,6 +631,21 @@ class JSONRPCServer {
 
         case ("POST", "/rpc"):
             handleRPC(headers: headers, body: body, connection: connection)
+
+        case ("POST", "/quiet-callback"):
+            // Only the on-device Shortcut may report; nonce is in the body, never URL/logs.
+            guard query.isEmpty, isLoopback(connection), let body else {
+                sendHTTPResponse(connection: connection, status: 403, body: "Forbidden"); return
+            }
+            do {
+                let report = try QuietCallback.parse(method: method, path: pathOnly,
+                    contentType: headers["content-type"],
+                    headerBytes: headerBytes, body: body)
+                let accepted = quietControl.callback(report, now: ProcessInfo.processInfo.systemUptime)
+                sendHTTPResponse(connection: connection, status: accepted ? 204 : 409, body: "")
+            } catch {
+                sendHTTPResponse(connection: connection, status: 400, body: "Invalid callback")
+            }
 
         case ("OPTIONS", _):
             sendHTTPResponse(connection: connection, status: 200, headers: corsHeaders(), body: "")
@@ -1099,6 +1127,23 @@ class JSONRPCServer {
             return
         }
 
+        if rpcRequest.method.hasPrefix("automation_") {
+            let response = handleQuietRPC(rpcRequest, owner: opened.tokId, local: isLoopback(connection))
+            sendSealed(connection, seal: seal, json: response)
+            return
+        }
+
+        let session = rpcRequest.params?["automation_session"]?.stringValue
+        if rpcRequest.params?["automation_session"] != nil && session == nil {
+            sendSealed(connection, seal: seal, json: Self.errorJSON(rpcRequest.id, .invalidParams))
+            return
+        }
+        if QuietRPCMethodDefinitions.requiresUIGate(rpcRequest.method),
+           let error = quietGateForDequeued(owner: opened.tokId, method: rpcRequest.method, session: session) {
+            sendSealed(connection, seal: seal, json: Self.errorJSON(rpcRequest.id, error))
+            return
+        }
+
         guard let handler = onRPCRequest else {
             sendSealed(connection, seal: seal, json: Self.errorJSON(rpcRequest.id, .internalError))
             return
@@ -1115,7 +1160,7 @@ class JSONRPCServer {
             p[Self.peerSourceParam] = .string(Self.peer(of: connection)?.via ?? PeerSource.other.rawValue)
             params = p
         }
-        handler(method, params) { [weak self] result, error in
+        handler(method, params, opened.tokId) { [weak self] result, error in
             let json = error.map { Self.errorJSON(rpcRequest.id, $0) }
                 ?? Self.resultJSON(rpcRequest.id, result ?? [:])
             self?.sendSealed(connection, seal: seal, json: json)
@@ -1126,6 +1171,76 @@ class JSONRPCServer {
             if Self.uiMutatingMethods.contains(method) {
                 self?.onRPCUIChanged?()
             }
+        }
+    }
+
+    private func handleQuietRPC(_ request: JSONRPCRequest, owner: String, local: Bool) -> String {
+        let method = request.method
+        let params = request.params ?? [:]
+        let now = ProcessInfo.processInfo.systemUptime
+        func result(_ values: [String: JSONValue]) -> String { Self.resultJSON(request.id, values) }
+        func error(_ message: String) -> String { Self.errorJSON(request.id, .serverError(message)) }
+        func statusValues(_ requestedID: String? = nil) -> [String: JSONValue] {
+            quietControl.status(owner: owner, requestedID: requestedID, now: ProcessInfo.processInfo.systemUptime)
+                .mapValues(JSONValue.string)
+        }
+        do {
+            switch method {
+            case "automation_config":
+                if let setting = params["enabled"] {
+                    guard local, let requested = setting.boolValue else {
+                        return error("enabled requires an authenticated on-device/local request and a boolean")
+                    }
+                    _ = try quietControl.configure(enabled: requested, now: now)
+                }
+                return result(["enabled": .bool(quietControl.isAvailable),
+                               "storage_state": .string(quietControl.storageState),
+                               "scope": .string("process-local lease; persistent token modes")])
+            case "automation_register":
+                guard let mode = params["mode"]?.stringValue else { return error("mode must be automation or manual") }
+                let registered = try quietControl.register(owner: owner, mode: mode, now: now)
+                return result(["mode": .string(registered), "quiet_available": .bool(quietControl.isAvailable)])
+            case "automation_owner_status":
+                return result(statusValues())
+            case "automation_status":
+                guard let id = params["lease_id"]?.stringValue else { return error("lease_id required") }
+                let values = statusValues(id)
+                guard values["lease_id"] != nil else { return error("lease not found for owner") }
+                return result(values)
+            case "automation_begin":
+                guard case .int(let ttl)? = params["ttl_seconds"], onQuietShortcutURL != nil else {
+                    return error("ttl_seconds integer required or quiet URL launcher unavailable")
+                }
+                let launch = try quietControl.begin(owner: owner, ttl: ttl, now: now, date: Date())
+                onQuietShortcutURL?(launch.url)
+                // A server-side timer supplements the Shortcut's finite Focus Until date.
+                queue.asyncAfter(deadline: .now() + Double(ttl)) { [weak self] in
+                    guard let self else { return }
+                    if let end = try? self.quietControl.end(owner: owner, id: launch.leaseID,
+                                                           now: ProcessInfo.processInfo.systemUptime) {
+                        self.onQuietShortcutURL?(end.url)
+                    }
+                }
+                return result(["lease_id": .string(launch.leaseID), "state": .string("preparing"),
+                               "deadline": .string(launch.deadline)])
+            case "automation_end":
+                guard let id = params["lease_id"]?.stringValue else { return error("lease_id required") }
+                if let launch = try quietControl.end(owner: owner, id: id, now: now) {
+                    onQuietShortcutURL?(launch.url)
+                }
+                return result(statusValues(id))
+            case "automation_takeover":
+                guard params["mode"]?.stringValue == "manual", quietControl.mode(owner: owner) == "manual" else {
+                    return error("explicit manual mode required")
+                }
+                if let launch = try quietControl.takeover(now: now) { onQuietShortcutURL?(launch.url) }
+                let state = quietControl.takeoverState(now: now)
+                return result(["state": .string(state)])
+            default:
+                return Self.errorJSON(request.id, .methodNotFound)
+            }
+        } catch {
+            return Self.errorJSON(request.id, .serverError("quiet control unavailable: \(error)"))
         }
     }
 
@@ -1174,6 +1289,7 @@ class JSONRPCServer {
         "type", "clear_text", "home", "lock", "unlock",
         "launch_app", "activate_app", "terminate_app", "open_url",
     ]
+
 
     // MARK: - Response Helpers
 
@@ -1244,10 +1360,12 @@ class JSONRPCServer {
         let statusText: String
         switch status {
         case 200: statusText = "OK"
+        case 204: statusText = "No Content"
         case 400: statusText = "Bad Request"
         case 401: statusText = "Unauthorized"
         case 403: statusText = "Forbidden"
         case 404: statusText = "Not Found"
+        case 409: statusText = "Conflict"
         case 413: statusText = "Content Too Large"
         case 429: statusText = "Too Many Requests"
         case 500: statusText = "Internal Server Error"

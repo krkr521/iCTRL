@@ -13,13 +13,16 @@ final class NativeClipboardService {
     private final class Pending {
         let request: NativeClipboardRequest
         let reply: Reply
+        let authorize: () -> JSONRPCError?
         let lock = NSLock()
         private var replied = false
         private(set) var mutationStarted = false
         var originalApp: String?
         var switched = false
 
-        init(_ request: NativeClipboardRequest, reply: @escaping Reply) { self.request = request; self.reply = reply }
+        init(_ request: NativeClipboardRequest, authorize: @escaping () -> JSONRPCError?, reply: @escaping Reply) {
+            self.request = request; self.authorize = authorize; self.reply = reply
+        }
         var pending: Bool { lock.lock(); defer { lock.unlock() }; return !replied }
         func beginMutation() -> Bool {
             lock.lock(); defer { lock.unlock() }
@@ -47,7 +50,8 @@ final class NativeClipboardService {
         ])
     }
 
-    func handle(method: String, params: [String: JSONValue]?, completion: @escaping Reply) {
+    func handle(method: String, params: [String: JSONValue]?,
+                authorize: @escaping () -> JSONRPCError?, completion: @escaping Reply) {
         let request: NativeClipboardRequest
         do { request = try NativeClipboardRequest(method: method, params: params) }
         catch let validation as NativeClipboardValidationError {
@@ -58,7 +62,7 @@ final class NativeClipboardService {
         guard !busy else { stateLock.unlock(); completion(nil, Self.failure("busy", "Another native clipboard operation is still active. Do not repeat a pending operation.")); return }
         busy = true
         stateLock.unlock()
-        let operation = Pending(request, reply: completion)
+        let operation = Pending(request, authorize: authorize, reply: completion)
         // This timeout does NOT cancel an in-progress UIKit call or release the
         // busy guard. A permission prompt must not cause duplicate writes.
         DispatchQueue.global().asyncAfter(deadline: .now() + 8) { operation.timedOut() }
@@ -67,6 +71,7 @@ final class NativeClipboardService {
 
     private func prepare(_ operation: Pending) {
         guard operation.pending else { release(); return }
+        if let denied = operation.authorize() { operation.send(nil, denied); release(); return }
         guard !LockStateMonitor.shared().isLocked else {
             operation.send(nil, Self.failure("locked", "Unlock the iPhone manually before accessing its clipboard.", requiresUserAction: true)); release(); return
         }
@@ -118,6 +123,7 @@ final class NativeClipboardService {
     private func access(_ operation: Pending) {
         dispatchPrecondition(condition: .onQueue(.main))
         guard operation.pending else { finish(operation, value: nil, error: nil); return }
+        if let denied = operation.authorize() { finish(operation, value: nil, error: denied); return }
         guard UIApplication.shared.applicationState == .active, !LockStateMonitor.shared().isLocked else {
             finish(operation, value: nil, error: Self.failure("foreground_required", "Runner foreground access was lost; no new clipboard action was started.", requiresUserAction: true)); return
         }

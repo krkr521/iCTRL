@@ -1233,19 +1233,40 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 if status == .advertising { self.setLocalNetworkAccess("granted") }
             }
         }
-        srv.onRPCRequest = { [weak self] method, params, completion in
-            guard let self = self else {
+        srv.onQuietShortcutURL = { [weak self] url in
+            guard let self else { return }
+            // Never wait on the server queue for Shortcuts' HTTP callback.
+            self.rpcQueue.async {
+                DispatchQueue.main.sync {
+                    var opened = false
+                    let exception = ObjCException.catching { opened = ForegroundApp.open(url) }
+                    Self.logBuffer.append(opened && exception == nil
+                        ? "Quiet Shortcut launch accepted (awaiting callback)" : "Quiet Shortcut launch failed")
+                }
+            }
+        }
+        srv.onRPCRequest = { [weak self, weak srv] method, params, owner, completion in
+            guard let self = self, let srv = srv else {
                 completion(nil, .internalError)
                 return
             }
 
             if NativeClipboardRequest.methods.contains(method) {
+                if let gateError = srv.quietGateForDequeued(owner: owner, method: method,
+                                             session: params?["automation_session"]?.stringValue) {
+                    completion(nil, gateError)
+                    return
+                }
                 // The envelope/auth checks have already run. Never log payloads,
                 // including errors; timing and method name are sufficient.
                 var values = params ?? [:]
                 values.removeValue(forKey: JSONRPCServer.peerSourceParam)
                 let start = ProcessInfo.processInfo.systemUptime
-                self.nativeClipboard.handle(method: method, params: values) { result, error in
+                self.nativeClipboard.handle(method: method, params: values, authorize: { [weak srv] in
+                    guard let srv else { return .internalError }
+                    return srv.quietGateForDequeued(owner: owner, method: method,
+                        session: params?["automation_session"]?.stringValue)
+                }) { result, error in
                     Self.logBuffer.recordTiming(method: method, ms: (ProcessInfo.processInfo.systemUptime - start) * 1000, ok: error == nil, quiet: true)
                     completion(result, error)
                 }
@@ -1316,7 +1337,10 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 // wrap it in an Obj-C @try/@catch so a stale/non-hittable element
                 // turns into a JSON-RPC error instead of a SIGABRT.
                 let work = {
-                    if method == "runtime_status" {
+                    if let gateError = srv.quietGateForDequeued(owner: owner, method: method,
+                                           session: params?["automation_session"]?.stringValue) {
+                        result = (nil, gateError)
+                    } else if method == "runtime_status" {
                         result = (self.runtimeStatus(), nil)
                     } else if method == "config" {
                         result = self.handleConfig(params)

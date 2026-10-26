@@ -6,7 +6,9 @@ skill_version: "1.98.13-krkr.native4"
 
 # iCTRL — control an iPhone over HTTP
 
-iCTRL runs on the iPhone and serves UI automation as **JSON-RPC 2.0 over HTTP, port 8200**, encrypted. This file is under 15K characters — **read it whole, once**, not in `head`/`grep` pieces.
+iCTRL runs on the iPhone and serves UI automation as **JSON-RPC 2.0 over HTTP, port 8200**, encrypted. Read this file whole, once, not in `head`/`grep` pieces.
+
+**Automated Codex/Minis control:** first call `automation_register {"mode":"automation"}` with its own paired token. The token stays automation across Runner restarts; retire it by revoking the pairing. After the user validates the dedicated Focus/Shortcuts, an authenticated device-local client calls `automation_config {"enabled":true}` (default false). Then call `automation_begin {"ttl_seconds":120}`, then poll `automation_status {"lease_id":"..."}`. Send UI mutations only after `quiet_verified`, always with `automation_session` set to that lease id, and call `automation_end` in cleanup. A lost Begin response is ambiguous: call `automation_owner_status`, never repeat Begin. If unavailable, expired or uncertain, stop UI work. The manual browser must use a different paired token and register `{"mode":"manual"}`; it never starts quiet. See `docs/quiet-control.md` for Focus setup, takeover and callback limits. Default installation has quiet control off.
 
 ## Quick start
 
