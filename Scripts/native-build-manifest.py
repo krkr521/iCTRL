@@ -1,5 +1,23 @@
 """Bounded metadata-only checks for unsigned release archives; never reads profiles."""
 import hashlib, json, pathlib, plistlib, re, subprocess, sys, zipfile
+
+def read_server_version():
+    source = pathlib.Path(__file__).resolve().parent.parent / "iCTRLKit" / "RPCMethod.swift"
+    try:
+        contents = source.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise SystemExit("Cannot read serverVersion source: " + str(error)) from error
+    declarations = re.findall(r"(?m)^[ \t]*static[ \t]+let[ \t]+serverVersion\b[^\r\n]*$", contents)
+    if len(declarations) != 1:
+        raise SystemExit("Expected exactly one static serverVersion declaration")
+    declaration = re.fullmatch(r'[ \t]*static[ \t]+let[ \t]+serverVersion[ \t]*=[ \t]*"([^"]+)"[ \t]*(?://[^\r\n]*)?', declarations[0])
+    if not declaration:
+        raise SystemExit("Invalid static serverVersion declaration")
+    version = declaration.group(1)
+    if not re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?", version):
+        raise SystemExit("Invalid static serverVersion format")
+    return version
+
 out = pathlib.Path(sys.argv[1]).resolve()
 artifacts = []
 for name in ("iCTRL.ipa", "iCTRLUITests-Runner.ipa"):
@@ -59,11 +77,12 @@ if not policy_results or any(int(failures) != 0 for _, failures in policy_result
 policy_count = max(int(count) for count, _ in policy_results)
 version = subprocess.check_output(["xcodebuild", "-version"], text=True).strip()
 commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+server_version = read_server_version()
 (out / "build-manifest.json").write_text(json.dumps({
     "source_commit": commit, "upstream_base_commit": "874f528759b1b977971a06cc4a3594d169eb77b9", "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], text=True).strip()),
     "upstream_pr": {"number": 6, "head": "2b5fcfc632f83362ab7d00d42f1012d6920d0c55"},
     "xcode": version, "idevice": {"version": "v0.1.68", "sha256": "c9eccdd1942de756d746a2569d93302774ab0eff1cff314ec8118f768b3d8dc7"},
-    "server_version": "1.98.13-krkr.native4", "artifacts": artifacts,
+    "server_version": server_version, "artifacts": artifacts,
     "runner_compat_shim": {"decision": compat, "symbol": "_OBJC_CLASS_$_XCTCommandLineToolHelper"},
     "validation": {"swift_policy_tests": "passed", "swift_policy_test_count": policy_count,
                    "continuous_drag_checks_passed": int(path_match.group(1)),

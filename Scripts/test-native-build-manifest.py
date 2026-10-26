@@ -1,5 +1,5 @@
 """Packaging privacy/manifest regression checks; no real Apple artifacts or identity."""
-import contextlib, hashlib, io, json, pathlib, plistlib, runpy, sys, tempfile, unittest, zipfile
+import contextlib, hashlib, io, json, pathlib, plistlib, runpy, shutil, sys, tempfile, unittest, zipfile
 from unittest.mock import patch
 
 SCRIPT = pathlib.Path(__file__).with_name("native-build-manifest.py")
@@ -52,10 +52,51 @@ class NativeBuildManifestTests(unittest.TestCase):
                     self.run_manifest(folder)
                 self.assertFalse((folder / "build-manifest.json").exists())
 
-    def run_manifest(self, folder):
+    def run_manifest(self, folder, script=SCRIPT):
         outputs = ["Xcode test\n", "test-commit\n", ""]
-        with patch.object(sys, "argv", [str(SCRIPT), str(folder)]), patch("subprocess.check_output", side_effect=outputs), contextlib.redirect_stdout(io.StringIO()):
-            runpy.run_path(str(SCRIPT), run_name="__main__")
+        with patch.object(sys, "argv", [str(script), str(folder)]), patch("subprocess.check_output", side_effect=outputs), contextlib.redirect_stdout(io.StringIO()):
+            runpy.run_path(str(script), run_name="__main__")
+
+    def script_with_source(self, root, source):
+        scripts = root / "Scripts"
+        scripts.mkdir()
+        copied = scripts / SCRIPT.name
+        shutil.copyfile(SCRIPT, copied)
+        if source is not None:
+            kit = root / "iCTRLKit"
+            kit.mkdir()
+            (kit / "RPCMethod.swift").write_text(source, encoding="utf-8")
+        return copied
+
+    def test_server_version_comes_from_unique_swift_declaration(self):
+        with tempfile.TemporaryDirectory(prefix="native-manifest-") as temp:
+            root = pathlib.Path(temp)
+            folder = root / "release"; folder.mkdir()
+            self.fixture(folder)
+            script = self.script_with_source(root, 'static let serverVersion = "9.8.7-krkr.native52"\n')
+            self.run_manifest(folder, script)
+            result = json.loads((folder / "build-manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(result["server_version"], "9.8.7-krkr.native52")
+
+    def test_missing_duplicate_or_invalid_server_version_fails_closed(self):
+        cases = {
+            "missing_file": None,
+            "missing_declaration": "// no version here\n",
+            "duplicate": 'static let serverVersion = "1.2.3"\nstatic let serverVersion = "9.8.7"\n',
+            "empty": 'static let serverVersion = ""\n',
+            "bad_format": 'static let serverVersion = "native5"\n',
+            "leading_zero": 'static let serverVersion = "01.2.3"\n',
+            "nonliteral": 'static let serverVersion = computedVersion\n',
+        }
+        for name, source in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory(prefix="native-manifest-") as temp:
+                root = pathlib.Path(temp)
+                folder = root / "release"; folder.mkdir()
+                self.fixture(folder)
+                script = self.script_with_source(root, source)
+                with self.assertRaisesRegex(SystemExit, "serverVersion"):
+                    self.run_manifest(folder, script)
+                self.assertFalse((folder / "build-manifest.json").exists())
 
     def test_emits_exactly_two_hashed_resignable_artifacts(self):
         with tempfile.TemporaryDirectory(prefix="native-manifest-") as temp:
