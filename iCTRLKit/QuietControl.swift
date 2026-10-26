@@ -4,7 +4,8 @@ import Security
 /// Process-local coordination. Every method is locked because the authenticated
 /// HTTP queue and the Runner UI queue both consult the same gate.
 final class QuietControl {
-    struct Launch { let url: URL; let leaseID: String; let deadline: String }
+    struct Launch { let url: URL; let leaseID: String; let deadline: String; let nonce: String; let action: String }
+    struct Restore { let leaseID: String; let nonce: String; let action: String }
     enum Failure: Error { case disabled, invalid, busy, forbidden, unavailable }
     private let lock = NSLock()
     private var modes: [String: String] = [:]
@@ -14,7 +15,8 @@ final class QuietControl {
     private var wallDeadline: String?
     private var pendingUntil: TimeInterval?
     private var pendingAction: String?
-    private var uncertainBegin = false
+    private var contextDiagnostic: String?
+    private var restoringUntil: TimeInterval?
     private(set) var enabled: Bool
     let port: UInt16
 
@@ -77,14 +79,19 @@ final class QuietControl {
     private func expire(_ now: TimeInterval) {
         guard var value = lease else { return }
         if let until = pendingUntil, now >= until {
-            if pendingAction == "begin" { uncertainBegin = true }
+            if pendingAction == "begin" { value.noteBeginUncertain() }
             value.failPending(now: now)
             pendingUntil = nil
             pendingAction = nil
         }
+        if let until = restoringUntil, now >= until, value.state == .restoring {
+            value.markRestorationPending()
+            restoringUntil = nil
+            contextDiagnostic = "foreground_restore_timeout"
+        }
         // Any expired lease must stop authorizing UI; gate() also performs this.
         if now >= value.deadline {
-            if pendingAction == "begin" { uncertainBegin = true }
+            if pendingAction == "begin" { value.noteBeginUncertain() }
             _ = value.gate(tokId: value.ownerTokId, session: value.id, now: now)
         }
         lease = value
@@ -122,6 +129,12 @@ final class QuietControl {
         return value.state.rawValue
     }
 
+    func takeoverDiagnostic(now: TimeInterval) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        expire(now)
+        return lease?.state == .ended ? nil : contextDiagnostic
+    }
+
     private func shortcutURL(name: String, action: String, nonce: String, deadline: String) throws -> URL {
         var input = ["action": action, "nonce": nonce, "deadline": deadline,
                      "callback": "http://127.0.0.1:\(port)/quiet-callback"]
@@ -148,8 +161,8 @@ final class QuietControl {
         var value = try QuietLease(ownerTokId: owner, id: id, ttl: TimeInterval(ttl), now: now)
         try value.prepareCallback(nonce: nonce, action: "begin", expectedDeadline: deadline, now: now)
         let url = try shortcutURL(name: "iCTRL Quiet Begin", action: "begin", nonce: nonce, deadline: deadline)
-        lease = value; wallDeadline = deadline; pendingUntil = now + 30; pendingAction = "begin"; uncertainBegin = false
-        return Launch(url: url, leaseID: id, deadline: deadline)
+        lease = value; wallDeadline = deadline; pendingUntil = now + 30; pendingAction = "begin"; restoringUntil = nil; contextDiagnostic = nil
+        return Launch(url: url, leaseID: id, deadline: deadline, nonce: nonce, action: "begin")
     }
 
     func status(owner: String, requestedID: String?, now: TimeInterval) -> [String: String] {
@@ -159,6 +172,7 @@ final class QuietControl {
         var out = ["mode": modes[owner] ?? "manual_legacy"]
         if let value = lease, value.ownerTokId == owner, requestedID == nil || requestedID == value.id {
             out["lease_id"] = value.id; out["state"] = value.state.rawValue; out["deadline"] = wallDeadline
+            if let contextDiagnostic { out["context_diagnostic"] = contextDiagnostic }
         }
         return out
     }
@@ -183,15 +197,13 @@ final class QuietControl {
         lock.lock(); defer { lock.unlock() }
         expire(now)
         guard var value = lease, value.ownerTokId == owner, value.id == id else { throw Failure.forbidden }
-        let wasPreparing = value.state == .preparing
         guard value.end(tokId: owner, session: id, now: now) else { lease = value; return nil }
         let nonce = try Self.random()
         let deadline = wallDeadline ?? ""
         try value.prepareCallback(nonce: nonce, action: "end", expectedDeadline: deadline, now: now)
         let url = try shortcutURL(name: "iCTRL Quiet Inspect End", action: "end", nonce: nonce, deadline: deadline)
-        uncertainBegin = uncertainBegin || wasPreparing
-        lease = value; pendingUntil = now + 30; pendingAction = "end"
-        return Launch(url: url, leaseID: id, deadline: deadline)
+        lease = value; pendingUntil = now + 30; pendingAction = "end"; restoringUntil = nil; contextDiagnostic = nil
+        return Launch(url: url, leaseID: id, deadline: deadline, nonce: nonce, action: "end")
     }
 
     func takeover(now: TimeInterval) throws -> Launch? {
@@ -213,8 +225,8 @@ final class QuietControl {
         let deadline = wallDeadline ?? ""
         try value.prepareCallback(nonce: nonce, action: "inspect", expectedDeadline: deadline, now: now)
         let url = try shortcutURL(name: "iCTRL Quiet Inspect End", action: "inspect", nonce: nonce, deadline: deadline)
-        lease = value; pendingUntil = now + 30; pendingAction = "inspect"
-        return Launch(url: url, leaseID: value.id, deadline: deadline)
+        lease = value; pendingUntil = now + 30; pendingAction = "inspect"; restoringUntil = nil; contextDiagnostic = nil
+        return Launch(url: url, leaseID: value.id, deadline: deadline, nonce: nonce, action: "inspect")
     }
 
     @discardableResult func callback(_ report: QuietCallback, now: TimeInterval) -> Bool {
@@ -226,9 +238,46 @@ final class QuietControl {
         if accepted {
             pendingUntil = nil
             pendingAction = nil
-            if report.action == "end" && uncertainBegin { value.markRestorationPending() }
+            restoringUntil = now + 8
         }
         lease = value
         return accepted
+    }
+
+    func restorationForAcceptedCallback(_ report: QuietCallback, now: TimeInterval) -> Restore? {
+        lock.lock(); defer { lock.unlock() }
+        guard let value = lease, value.mayRestore(nonce: report.nonce, now: now) else { return nil }
+        return Restore(leaseID: value.id, nonce: report.nonce, action: report.action)
+    }
+
+    func mayRestore(_ request: Restore, now: TimeInterval) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        expire(now)
+        return lease?.id == request.leaseID && lease?.mayRestore(nonce: request.nonce, now: now) == true
+    }
+
+    @discardableResult func finishRestoration(_ request: Restore, succeeded: Bool, diagnostic: String?, now: TimeInterval) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        expire(now)
+        guard var value = lease, value.id == request.leaseID,
+              value.finishRestoration(nonce: request.nonce, succeeded: succeeded, now: now) else { return false }
+        lease = value
+        restoringUntil = nil
+        contextDiagnostic = succeeded ? nil : (diagnostic ?? "foreground_restore_unconfirmed")
+        return true
+    }
+
+    func failLaunch(_ launch: Launch, diagnostic: String, now: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        guard var value = lease, value.id == launch.leaseID,
+              value.hasPendingCallback(nonce: launch.nonce, now: now) else { return }
+        value.markRestorationPending()
+        lease = value; pendingAction = nil; pendingUntil = nil; restoringUntil = nil
+        contextDiagnostic = diagnostic
+    }
+
+    func mayLaunch(_ launch: Launch, now: TimeInterval) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return lease?.id == launch.leaseID && lease?.hasPendingCallback(nonce: launch.nonce, now: now) == true
     }
 }

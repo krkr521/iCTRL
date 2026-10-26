@@ -181,6 +181,12 @@ class ActionHandler {
         return bid
     }
 
+    /// Quiet helper uses the same PID-aware foreground resolver as normal UI RPCs.
+    func quietForegroundBundleID() -> String? { resolveForegroundBundleId() }
+
+    /// Home restoration follows the verified Home RPC path, including its fallback.
+    func quietReturnHome() -> Bool { pressHome().1 == nil }
+
     private func resolveForegroundBundleIdUncached() -> String? {
         // On iOS 27 currentBundleID is always nil, and asking still costs
         // a few hundred ms — paid several times per call. After a few nils

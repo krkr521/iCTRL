@@ -11,6 +11,7 @@ public struct QuietLease {
         case expired = "expired"
         case suspended = "suspended"
         case restorationPending = "restoration_pending"
+        case restoring = "restoring"
     }
     public enum Decision: Equatable { case allowed, denied(String) }
     public let ownerTokId: String
@@ -20,6 +21,7 @@ public struct QuietLease {
     private var pending: (nonce: String, action: String, expectedDeadline: String, expiry: TimeInterval)?
     private var usedNonces = Set<String>()
     private var beginUncertain = false
+    private var restoring: (nonce: String, action: String, observed: String)?
 
     public init(ownerTokId: String, id: String, ttl: TimeInterval, now: TimeInterval) throws {
         guard !ownerTokId.isEmpty, !id.isEmpty, ttl.isFinite, now.isFinite, ttl > 0, ttl <= 300 else { throw LeaseError.invalid }
@@ -45,21 +47,41 @@ public struct QuietLease {
         pending = nil // one use, including negative report
         if action == "begin" {
             guard state == .preparing else { return false }
-            state = observed == "iCTRL Automation" ? .quietVerified : .failed
+            state = .restoring
         } else if action == "end" {
             guard state == .ending else { return false }
-            state = !beginUncertain && (observed == "off" || observed == "preserved_user_focus") ? .ended : .restorationPending
+            state = .restoring
         } else {
             guard state == .restorationPending else { return false }
-            state = (observed == "off" || observed == "preserved_user_focus") ? .ended : .restorationPending
+            state = .restoring
         }
+        restoring = (nonce, action, observed)
+        return true
+    }
+
+    public func mayRestore(nonce: String, now: TimeInterval) -> Bool {
+        guard let value = restoring, state == .restoring, value.nonce == nonce, now.isFinite else { return false }
+        return value.action != "begin" || now < deadline
+    }
+
+    @discardableResult public mutating func finishRestoration(nonce: String, succeeded: Bool, now: TimeInterval) -> Bool {
+        guard mayRestore(nonce: nonce, now: now), let value = restoring else { return false }
+        restoring = nil
+        if !succeeded { state = .restorationPending }
+        else if value.action == "begin" { state = value.observed == "iCTRL Automation" ? .quietVerified : .failed }
+        else if value.action == "end" {
+            state = !beginUncertain && (value.observed == "off" || value.observed == "preserved_user_focus") ? .ended : .restorationPending
+        } else { state = (value.observed == "off" || value.observed == "preserved_user_focus") ? .ended : .restorationPending }
         return true
     }
 
     public mutating func gate(tokId: String, session: String?, now: TimeInterval) -> Decision {
         guard now.isFinite else { return .denied("invalid_clock") }
-        if now >= deadline && state != .ended && state != .ending && state != .restorationPending {
+        let endRestoring = state == .restoring && restoring?.action != "begin"
+        if now >= deadline && state != .ended && state != .ending && state != .restorationPending && !endRestoring {
+            if state == .restoring && restoring?.action == "begin" { beginUncertain = true }
             state = .expired; pending = nil
+            restoring = nil
         }
         guard let session else { return .denied("manual_route_required") }
         guard tokId == ownerTokId, session == id else { return .denied("wrong_session") }
@@ -71,19 +93,26 @@ public struct QuietLease {
         guard tokId == ownerTokId, session == id else { return false }
         if state == .ended || state == .ending || state == .restorationPending { return false } // idempotent, no second Shortcut
         if now > deadline + 300 { state = .restorationPending; pending = nil; return false }
-        guard state == .quietVerified || state == .preparing || state == .failed || state == .expired || state == .suspended else { return false }
-        if state == .preparing { beginUncertain = true }
-        state = .ending; pending = nil; return true
+        let interruptedBegin = state == .restoring && restoring?.action == "begin"
+        guard state == .quietVerified || state == .preparing || state == .failed || state == .expired || state == .suspended || interruptedBegin else { return false }
+        if state == .preparing || interruptedBegin { beginUncertain = true }
+        state = .ending; pending = nil; restoring = nil; return true
     }
 
-    public mutating func suspend() { state = .suspended; pending = nil }
-    public mutating func markRestorationPending() { state = .restorationPending; pending = nil }
+    public mutating func suspend() { state = .suspended; pending = nil; restoring = nil }
+    public mutating func noteBeginUncertain() { beginUncertain = true }
+    public mutating func markRestorationPending() { state = .restorationPending; pending = nil; restoring = nil }
     public var hasPendingCallback: Bool { pending != nil }
+    public func hasPendingCallback(nonce: String, now: TimeInterval) -> Bool {
+        guard let pending, pending.nonce == nonce, now.isFinite, now < pending.expiry else { return false }
+        return pending.action != "begin" || now < deadline
+    }
     public mutating func failPending(now: TimeInterval) {
         if state == .ending { state = .restorationPending }
         else if now >= deadline { state = .expired }
         else if state == .preparing { state = .failed }
         pending = nil
+        restoring = nil
     }
 }
 

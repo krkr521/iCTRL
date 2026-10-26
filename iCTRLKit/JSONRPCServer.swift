@@ -34,7 +34,22 @@ class JSONRPCServer {
 
     var onRPCRequest: ((String, [String: JSONValue]?, String, @escaping ([String: JSONValue]?, JSONRPCError?) -> Void) -> Void)?
     /// Must enqueue on the Runner's normal UI lane; launch acceptance is not Focus verification.
-    var onQuietShortcutURL: ((URL) -> Void)?
+    var onQuietShortcutURL: ((QuietControl.Launch) -> Void)?
+    /// Callback is acknowledged promptly; context restoration runs later on the UI lane.
+    var onQuietRestore: ((QuietControl.Restore) -> Void)?
+    func quietMayRestore(_ request: QuietControl.Restore) -> Bool {
+        quietControl.mayRestore(request, now: ProcessInfo.processInfo.systemUptime)
+    }
+    @discardableResult func quietFinishRestoration(_ request: QuietControl.Restore, succeeded: Bool, diagnostic: String?) -> Bool {
+        quietControl.finishRestoration(request, succeeded: succeeded, diagnostic: diagnostic,
+                                       now: ProcessInfo.processInfo.systemUptime)
+    }
+    func quietFailLaunch(_ launch: QuietControl.Launch, diagnostic: String) {
+        quietControl.failLaunch(launch, diagnostic: diagnostic, now: ProcessInfo.processInfo.systemUptime)
+    }
+    func quietMayLaunch(_ launch: QuietControl.Launch) -> Bool {
+        quietControl.mayLaunch(launch, now: ProcessInfo.processInfo.systemUptime)
+    }
     var onStateChange: ((Bool) -> Void)?
     /// Hand off an authorized connection to the video streamer (host owns the
     /// frame grabber + VideoStreamer). The server stops managing this connection
@@ -644,6 +659,8 @@ class JSONRPCServer {
                     contentType: headers["content-type"],
                     headerBytes: headerBytes, body: body)
                 let accepted = quietControl.callback(report, now: ProcessInfo.processInfo.systemUptime)
+                if accepted, let restore = quietControl.restorationForAcceptedCallback(report,
+                                             now: ProcessInfo.processInfo.systemUptime) { onQuietRestore?(restore) }
                 sendHTTPResponse(connection: connection, status: accepted ? 204 : 409, body: "")
             } catch {
                 sendHTTPResponse(connection: connection, status: 400, body: "Invalid callback")
@@ -1208,6 +1225,9 @@ class JSONRPCServer {
                     let takeover = quietControl.takeoverState(now: now)
                     values["takeover_state"] = .string(takeover)
                     values["ui_blocked"] = .bool(takeover != "manual_ready")
+                    if let diagnostic = quietControl.takeoverDiagnostic(now: now) {
+                        values["context_diagnostic"] = .string(diagnostic)
+                    }
                 }
                 return result(values)
             case "automation_status":
@@ -1220,13 +1240,13 @@ class JSONRPCServer {
                     return error("ttl_seconds integer required or quiet URL launcher unavailable")
                 }
                 let launch = try quietControl.begin(owner: owner, ttl: ttl, now: now, date: Date())
-                onQuietShortcutURL?(launch.url)
+                onQuietShortcutURL?(launch)
                 // A server-side timer supplements the Shortcut's finite Focus Until date.
                 queue.asyncAfter(deadline: .now() + Double(ttl)) { [weak self] in
                     guard let self else { return }
                     if let end = try? self.quietControl.end(owner: owner, id: launch.leaseID,
                                                            now: ProcessInfo.processInfo.systemUptime) {
-                        self.onQuietShortcutURL?(end.url)
+                        self.onQuietShortcutURL?(end)
                     }
                 }
                 return result(["lease_id": .string(launch.leaseID), "state": .string("preparing"),
@@ -1234,14 +1254,14 @@ class JSONRPCServer {
             case "automation_end":
                 guard let id = params["lease_id"]?.stringValue else { return error("lease_id required") }
                 if let launch = try quietControl.end(owner: owner, id: id, now: now) {
-                    onQuietShortcutURL?(launch.url)
+                    onQuietShortcutURL?(launch)
                 }
                 return result(statusValues(id))
             case "automation_takeover":
                 guard params["mode"]?.stringValue == "manual", quietControl.mode(owner: owner) == "manual" else {
                     return error("explicit manual mode required")
                 }
-                if let launch = try quietControl.takeover(now: now) { onQuietShortcutURL?(launch.url) }
+                if let launch = try quietControl.takeover(now: now) { onQuietShortcutURL?(launch) }
                 let state = quietControl.takeoverState(now: now)
                 return result(["state": .string(state)])
             case "automation_inspect":
@@ -1249,7 +1269,7 @@ class JSONRPCServer {
                     return error("registered manual mode and quiet URL launcher required")
                 }
                 let launch = try quietControl.inspectForManual(owner: owner, now: now)
-                onQuietShortcutURL?(launch.url)
+                onQuietShortcutURL?(launch)
                 return result(["state": .string(quietControl.takeoverState(now: now))])
             default:
                 return Self.errorJSON(request.id, .methodNotFound)

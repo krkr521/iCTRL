@@ -1197,6 +1197,9 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
 
     /// Wire RPC dispatch + public logs onto a server instance.
     private let nativeClipboard = NativeClipboardService()
+    /// Accessed only on rpcQueue. Nonces are never logged or persisted.
+    private var quietBeginContext: [String: String] = [:]
+    private var quietRestoreContext: [String: String] = [:]
     private let companionMetadataLock = NSLock()
     private var companionMetadata: [String: JSONValue] = ["companion_metadata_source": .string("unavailable"), "companion_metadata_verified": .bool(false), "renewal_receipt": .null]
 
@@ -1233,16 +1236,92 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 if status == .advertising { self.setLocalNetworkAccess("granted") }
             }
         }
-        srv.onQuietShortcutURL = { [weak self] url in
-            guard let self else { return }
-            // Never wait on the server queue for Shortcuts' HTTP callback.
+        srv.onQuietShortcutURL = { [weak self, weak srv] launch in
+            guard let self, let srv else { return }
+            // Capture immediately before leaving the foreground, on the serial UI
+            // lane. Shortcuts' HTTP callback never waits for this queue.
             self.rpcQueue.async {
-                DispatchQueue.main.sync {
-                    var opened = false
-                    let exception = ObjCException.catching { opened = ForegroundApp.open(url) }
-                    Self.logBuffer.append(opened && exception == nil
-                        ? "Quiet Shortcut launch accepted (awaiting callback)" : "Quiet Shortcut launch failed")
+                guard self.server === srv, srv.quietMayLaunch(launch) else { return }
+                let captured: String? = DispatchQueue.main.sync {
+                    if UIApplication.shared.applicationState == .active { return Bundle.main.bundleIdentifier }
+                    return self.actionHandler?.quietForegroundBundleID()
                 }
+                let target: String?
+                if launch.action == "begin" {
+                    target = captured
+                    self.quietBeginContext.removeAll()
+                    if let captured { self.quietBeginContext[launch.leaseID] = captured }
+                } else {
+                    // A failed/late Begin can leave Shortcuts itself in front.
+                    // That must not become the user's original app. At normal End,
+                    // use the task's current app (which may be Home).
+                    target = captured == "com.apple.shortcuts" ? self.quietBeginContext[launch.leaseID] : captured
+                }
+                guard let target, !target.isEmpty, target != "com.apple.shortcuts" else {
+                    srv.quietFailLaunch(launch, diagnostic: "foreground_before_helper_unknown")
+                    Self.logBuffer.append("Quiet helper not launched: original foreground unavailable")
+                    return
+                }
+                guard srv.quietMayLaunch(launch) else { return }
+                self.quietRestoreContext = [launch.nonce: target]
+                var opened = false
+                let exception = DispatchQueue.main.sync {
+                    ObjCException.catching { opened = ForegroundApp.open(launch.url) }
+                }
+                if !opened || exception != nil {
+                    self.quietRestoreContext.removeValue(forKey: launch.nonce)
+                    srv.quietFailLaunch(launch, diagnostic: "shortcut_launch_failed")
+                    Self.logBuffer.append("Quiet Shortcut launch failed")
+                } else {
+                    Self.logBuffer.append("Quiet Shortcut launch accepted (awaiting callback and foreground restoration)")
+                }
+            }
+        }
+        srv.onQuietRestore = { [weak self, weak srv] request in
+            guard let self, let srv else { return }
+            self.rpcQueue.async {
+                guard self.server === srv, srv.quietMayRestore(request) else { return }
+                guard let target = self.quietRestoreContext.removeValue(forKey: request.nonce) else {
+                    _ = srv.quietFinishRestoration(request, succeeded: false, diagnostic: "foreground_context_missing")
+                    Self.logBuffer.append("Quiet foreground restoration blocked: context missing")
+                    return
+                }
+                // Do not move the screen for a stale callback superseded by End,
+                // takeover, or expiry while waiting behind another UI operation.
+                guard srv.quietMayRestore(request) else { return }
+                let before = self.actionHandler?.quietForegroundBundleID()
+                guard before == "com.apple.shortcuts" || before == target else {
+                    _ = srv.quietFinishRestoration(request, succeeded: false,
+                                                    diagnostic: "foreground_changed_during_helper")
+                    Self.logBuffer.append("Quiet foreground changed during helper; UI remains blocked")
+                    return
+                }
+                var opened = false
+                if before == target {
+                    opened = true
+                } else if target == "com.apple.springboard" {
+                    opened = DispatchQueue.main.sync { self.actionHandler?.quietReturnHome() ?? false }
+                } else {
+                    let exception = DispatchQueue.main.sync {
+                        ObjCException.catching { opened = ForegroundApp.openBundleID(target) }
+                    }
+                    if exception != nil { opened = false }
+                }
+                var confirmed = false
+                if opened {
+                    let until = Date().addingTimeInterval(2)
+                    var consecutive = 0
+                    repeat {
+                        guard srv.quietMayRestore(request) else { return }
+                        let actual = self.actionHandler?.quietForegroundBundleID()
+                        consecutive = actual == target ? consecutive + 1 : 0
+                        if consecutive >= 2 { confirmed = true; break }
+                        Thread.sleep(forTimeInterval: 0.1)
+                    } while Date() < until
+                }
+                let accepted = srv.quietFinishRestoration(request, succeeded: confirmed,
+                                                            diagnostic: confirmed ? nil : "foreground_restore_unconfirmed")
+                if accepted { Self.logBuffer.append(confirmed ? "Quiet foreground restored and confirmed" : "Quiet foreground restoration unconfirmed; UI remains blocked") }
             }
         }
         srv.onRPCRequest = { [weak self, weak srv] method, params, owner, completion in
