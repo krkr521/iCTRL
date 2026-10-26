@@ -5,14 +5,14 @@ from unittest.mock import patch
 SCRIPT = pathlib.Path(__file__).with_name("native-build-manifest.py")
 
 class NativeBuildManifestTests(unittest.TestCase):
-    def fixture(self, folder, profile=False):
+    def fixture(self, folder, profile=False, short_version="1.0.0", build_number="1"):
         (folder.parent / "build").mkdir(exist_ok=True)
         (folder.parent / "build" / "native-compat-status.txt").write_text("not-required-no-reference\n", encoding="utf-8")
         (folder.parent / "build" / "continuous-drag-tests.log").write_text("ContinuousDragPath: 189 checks passed\n", encoding="utf-8")
         (folder.parent / "build" / "swift-policy-tests.log").write_text("Executed 29 tests, with 0 failures (0 unexpected)\n", encoding="utf-8")
         for name, app in [("iCTRL.ipa", "iCTRL"), ("iCTRLUITests-Runner.ipa", "iCTRLUITests-Runner")]:
             with zipfile.ZipFile(folder / name, "w") as archive:
-                archive.writestr(f"Payload/{app}.app/Info.plist", plistlib.dumps({"CFBundleIdentifier": "test." + app, "CFBundleShortVersionString": "1.0.0", "CFBundleVersion": "1"}))
+                archive.writestr(f"Payload/{app}.app/Info.plist", plistlib.dumps({"CFBundleIdentifier": "test." + app, "CFBundleShortVersionString": short_version, "CFBundleVersion": build_number}))
                 if profile: archive.writestr(f"Payload/{app}.app/embedded.mobileprovision", b"must-not-be-read")
 
     def add_extension(self, folder, metadata, extension="iCTRLShare"):
@@ -73,6 +73,52 @@ class NativeBuildManifestTests(unittest.TestCase):
                 self.assertEqual(artifact["sha256"], hashlib.sha256((folder / artifact["name"]).read_bytes()).hexdigest())
                 self.assertTrue(artifact["requires_resigning"])
                 self.assertEqual(artifact["provisioning_profiles"], 0)
+                self.assertEqual(artifact["short_version"], "1.0.0")
+                self.assertEqual(artifact["build_number"], "1")
+
+    def rewrite_app_info(self, folder, ipa, change):
+        path = folder / ipa
+        with zipfile.ZipFile(path) as archive:
+            members = {member: archive.read(member) for member in archive.namelist()}
+        info_path = next(member for member in members if member.endswith(".app/Info.plist"))
+        metadata = plistlib.loads(members[info_path])
+        change(metadata)
+        members[info_path] = plistlib.dumps(metadata)
+        with zipfile.ZipFile(path, "w") as archive:
+            for member, content in members.items(): archive.writestr(member, content)
+
+    def test_manifest_records_actual_nonproduction_versions(self):
+        with tempfile.TemporaryDirectory(prefix="native-manifest-") as temp:
+            folder = pathlib.Path(temp) / "release"; folder.mkdir()
+            self.fixture(folder, short_version="7.8.9", build_number="42")
+            self.run_manifest(folder)
+            result = json.loads((folder / "build-manifest.json").read_text("utf-8"))
+            for artifact in result["artifacts"]:
+                self.assertEqual(artifact["short_version"], "7.8.9")
+                self.assertEqual(artifact["build_number"], "42")
+
+    def test_both_app_versions_must_be_nonempty(self):
+        for ipa in ("iCTRL.ipa", "iCTRLUITests-Runner.ipa"):
+            for key in ("CFBundleShortVersionString", "CFBundleVersion"):
+                for value in (None, "", "   "):
+                    with self.subTest(ipa=ipa, key=key, value=value), tempfile.TemporaryDirectory(prefix="native-manifest-") as temp:
+                        folder = pathlib.Path(temp) / "release"; folder.mkdir()
+                        self.fixture(folder)
+                        def change(metadata):
+                            if value is None: metadata.pop(key)
+                            else: metadata[key] = value
+                        self.rewrite_app_info(folder, ipa, change)
+                        with self.assertRaisesRegex(SystemExit, "App version/build metadata"):
+                            self.run_manifest(folder)
+                        self.assertFalse((folder / "build-manifest.json").exists())
+
+    def test_main_runner_version_divergence_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="native-manifest-") as temp:
+            folder = pathlib.Path(temp) / "release"; folder.mkdir()
+            self.fixture(folder)
+            self.rewrite_app_info(folder, "iCTRLUITests-Runner.ipa", lambda metadata: metadata.update(CFBundleVersion="99"))
+            with self.assertRaisesRegex(SystemExit, "Main and Runner"):
+                self.run_manifest(folder)
 
     def test_profile_presence_aborts_before_manifest(self):
         with tempfile.TemporaryDirectory(prefix="native-manifest-") as temp:

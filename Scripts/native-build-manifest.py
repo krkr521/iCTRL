@@ -11,6 +11,9 @@ for name in ("iCTRL.ipa", "iCTRLUITests-Runner.ipa"):
         info_names = [n for n in names if n.startswith("Payload/") and n.count("/") == 2 and n.endswith(".app/Info.plist")]
         if len(info_names) != 1: raise SystemExit("Expected exactly one app per IPA")
         info = plistlib.loads(archive.read(info_names[0]))
+        for key in ("CFBundleShortVersionString", "CFBundleVersion"):
+            if not isinstance(info.get(key), str) or not info[key].strip():
+                raise SystemExit("App version/build metadata is missing or empty: " + key)
         # Validate every embedded extension, including a missing extension plist.
         # Signing services reject missing or divergent extension version metadata.
         extension_roots = set()
@@ -35,7 +38,10 @@ for name in ("iCTRL.ipa", "iCTRLUITests-Runner.ipa"):
                     raise SystemExit("Embedded appex version/build metadata is missing or differs from parent: " + key)
     artifacts.append({"name": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                       "size_bytes": path.stat().st_size, "bundle_id": info["CFBundleIdentifier"],
+                      "short_version": info["CFBundleShortVersionString"], "build_number": info["CFBundleVersion"],
                       "requires_resigning": True, "provisioning_profiles": 0})
+if len({(item["short_version"], item["build_number"]) for item in artifacts}) != 1:
+    raise SystemExit("Main and Runner version/build metadata differ")
 compat_file = out.parent / "build" / "native-compat-status.txt"
 compat = compat_file.read_text(encoding="utf-8").strip()
 if compat not in {"not-required-no-reference", "already-present", "applied"}:

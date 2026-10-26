@@ -14,6 +14,8 @@ configFiles:
 settings:
   base:
     SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.98.13"
+    CURRENT_PROJECT_VERSION: 4
 
 targets:
   iCTRL:
@@ -39,8 +41,6 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: "$(ICTRL_BUNDLE_PREFIX).ictrl"
         GENERATE_INFOPLIST_FILE: YES
-        MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 1
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
@@ -68,8 +68,6 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: "$(ICTRL_BUNDLE_PREFIX).ictrl.share"
-        MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: 1
         INFOPLIST_FILE: iCTRLShare/Info.plist
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGN_STYLE: Automatic
@@ -115,7 +113,17 @@ targets:
     postBuildScripts:
       - name: "Strip unnecessary XCTest frameworks"
         script: |
+          set -eu
           RUNNER_APP="${BUILT_PRODUCTS_DIR}/iCTRLUITests-Runner.app"
+          # XCTest generates the host app from its own template; stamp its
+          # actual plist explicitly rather than assuming test-bundle settings
+          # propagate to that separately generated application.
+          RUNNER_PLIST="${RUNNER_APP}/Info.plist"
+          test -n "${MARKETING_VERSION}" && test -n "${CURRENT_PROJECT_VERSION}"
+          test -f "${RUNNER_PLIST}"
+          PB=/usr/libexec/PlistBuddy
+          "$PB" -c "Set :CFBundleShortVersionString ${MARKETING_VERSION}" "$RUNNER_PLIST" || "$PB" -c "Add :CFBundleShortVersionString string ${MARKETING_VERSION}" "$RUNNER_PLIST"
+          "$PB" -c "Set :CFBundleVersion ${CURRENT_PROJECT_VERSION}" "$RUNNER_PLIST" || "$PB" -c "Add :CFBundleVersion string ${CURRENT_PROJECT_VERSION}" "$RUNNER_PLIST"
           echo "🔧 Stripping XCTest frameworks from Runner.app..."
           rm -rf "${RUNNER_APP}/Frameworks/XCTAutomationSupport.framework"
           rm -rf "${RUNNER_APP}/Frameworks/XCTest.framework"
