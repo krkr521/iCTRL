@@ -21,6 +21,7 @@ public struct QuietLease {
     private var pending: (nonce: String, action: String, expectedDeadline: String, expiry: TimeInterval)?
     private var usedNonces = Set<String>()
     private var beginUncertain = false
+    private var endAttempted = false
     private var restoring: (nonce: String, action: String, observed: String)?
 
     public init(ownerTokId: String, id: String, ttl: TimeInterval, now: TimeInterval) throws {
@@ -91,11 +92,13 @@ public struct QuietLease {
     public mutating func end(tokId: String, session: String, now: TimeInterval) -> Bool {
         guard now.isFinite else { return false }
         guard tokId == ownerTokId, session == id else { return false }
-        if state == .ended || state == .ending || state == .restorationPending { return false } // idempotent, no second Shortcut
+        if state == .ended || state == .ending || endAttempted { return false } // idempotent, no second End Shortcut
         if now > deadline + 300 { state = .restorationPending; pending = nil; return false }
         let interruptedBegin = state == .restoring && restoring?.action == "begin"
-        guard state == .quietVerified || state == .preparing || state == .failed || state == .expired || state == .suspended || interruptedBegin else { return false }
-        if state == .preparing || interruptedBegin { beginUncertain = true }
+        let unresolvedBegin = state == .restorationPending
+        guard state == .quietVerified || state == .preparing || state == .failed || state == .expired || state == .suspended || interruptedBegin || unresolvedBegin else { return false }
+        if state == .preparing || interruptedBegin || unresolvedBegin { beginUncertain = true }
+        endAttempted = true
         state = .ending; pending = nil; restoring = nil; return true
     }
 

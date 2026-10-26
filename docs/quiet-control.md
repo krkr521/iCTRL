@@ -10,6 +10,7 @@ Each method uses the existing encrypted `/rpc` envelope. The server binds owners
 
 Each helper launch first captures the foreground app on the serial UI lane. Begin saves the pre-helper app; End and Inspect save the current task app or Home, falling back to Begin's saved app if Shortcuts is still in front. A matching callback enters `restoring` and is acknowledged without waiting for UI work. The Runner then restores the captured app on that same UI lane and confirms it is frontmost before `quiet_verified` or `manual_ready` can be reported. Home uses the verified Home-button path. If capture or confirmation fails, `context_diagnostic` explains the blocked state. A stale restoration completion after takeover or lease expiry cannot authorize input. The callback's HTTP 204 alone never authorizes input.
 If Begin cannot capture a valid original app before it attempts to open Shortcuts, it ends that lease without ever granting automated input and releases manual UI immediately. The old callback nonce cannot revive it. Once opening a helper has been attempted, even a false return or exception is treated as uncertain and stays blocked. End and Inspect also stay blocked on a capture failure because an earlier Begin may have changed Focus.
+If Begin's callback arrives but foreground restoration fails or times out, the lease remains blocked and permits one conditional End attempt. Once End has been attempted, later `restoration_pending` states cannot relaunch End; recovery uses the post-deadline read-only inspection.
 
 ## Exact Shortcut input and callback
 
