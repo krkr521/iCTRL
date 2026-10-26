@@ -53,6 +53,34 @@ final class QuietControlTests: XCTestCase {
         XCTAssertTrue(control.callback(try callback(from: end, action: "end", focus: "off"), now: 103))
         XCTAssertEqual(control.takeoverState(now: 103), "restoration_pending")
         XCTAssertNotNil(control.gate(owner: "web", method: "tap", session: nil, now: 103))
+        XCTAssertThrowsError(try control.inspectForManual(owner: "web", now: 459))
+        let inspect = try control.inspectForManual(owner: "web", now: 460)
+        XCTAssertFalse(control.callback(try callback(from: launch, action: "begin", focus: "iCTRL Automation"), now: 461))
+        XCTAssertNotNil(control.gate(owner: "web", method: "tap", session: nil, now: 461))
+        XCTAssertTrue(control.callback(try callback(from: inspect, action: "inspect", focus: "off"), now: 462))
+        XCTAssertEqual(control.takeoverState(now: 462), "manual_ready")
+        XCTAssertNil(control.gate(owner: "web", method: "tap", session: nil, now: 463))
+    }
+
+    func testLostBeginAndEndCallbacksRecoverOnlyAfterFreshInspection() throws {
+        let control = QuietControl(enabled: true, port: 8200)
+        try control.register(owner: "agent", mode: "automation", now: 100)
+        try control.register(owner: "web", mode: "manual", now: 100)
+        let begin = try control.begin(owner: "agent", ttl: 10, now: 100, date: Date(timeIntervalSince1970: 1_800_000_000))
+        let end = try XCTUnwrap(control.takeover(now: 101))
+        XCTAssertEqual(control.takeoverState(now: 132), "restoration_pending")
+        XCTAssertFalse(control.callback(try callback(from: end, action: "end", focus: "off"), now: 133))
+        XCTAssertThrowsError(try control.inspectForManual(owner: "web", now: 409))
+        let first = try control.inspectForManual(owner: "web", now: 410)
+        XCTAssertThrowsError(try control.inspectForManual(owner: "web", now: 411))
+        XCTAssertTrue(control.callback(try callback(from: first, action: "inspect", focus: "iCTRL Automation"), now: 412))
+        XCTAssertNotNil(control.gate(owner: "web", method: "tap", session: nil, now: 413))
+        let second = try control.inspectForManual(owner: "web", now: 414)
+        XCTAssertFalse(control.callback(try callback(from: first, action: "inspect", focus: "off"), now: 415))
+        XCTAssertTrue(control.callback(try callback(from: second, action: "inspect", focus: "preserved_user_focus"), now: 416))
+        XCTAssertEqual(control.takeoverState(now: 416), "manual_ready")
+        XCTAssertNil(control.gate(owner: "web", method: "tap", session: nil, now: 417))
+        XCTAssertFalse(control.callback(try callback(from: begin, action: "begin", focus: "iCTRL Automation"), now: 418))
     }
 
     func testModePersistsAndCannotDowngradeOnRestart() throws {

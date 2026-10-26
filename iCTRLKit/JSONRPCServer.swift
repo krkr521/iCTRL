@@ -1244,6 +1244,13 @@ class JSONRPCServer {
                 if let launch = try quietControl.takeover(now: now) { onQuietShortcutURL?(launch.url) }
                 let state = quietControl.takeoverState(now: now)
                 return result(["state": .string(state)])
+            case "automation_inspect":
+                guard quietControl.mode(owner: owner) == "manual", onQuietShortcutURL != nil else {
+                    return error("registered manual mode and quiet URL launcher required")
+                }
+                let launch = try quietControl.inspectForManual(owner: owner, now: now)
+                onQuietShortcutURL?(launch.url)
+                return result(["state": .string(quietControl.takeoverState(now: now))])
             default:
                 return Self.errorJSON(request.id, .methodNotFound)
             }

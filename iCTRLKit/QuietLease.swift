@@ -29,8 +29,9 @@ public struct QuietLease {
     public mutating func prepareCallback(nonce: String, action: String, expectedDeadline: String, now: TimeInterval) throws {
         guard nonce.range(of: "^[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil,
               !expectedDeadline.isEmpty, now.isFinite,
-              action == "begin" || action == "end" else { throw LeaseError.invalid }
-        guard (action == "begin" && state == .preparing) || (action == "end" && state == .ending) else { throw LeaseError.invalid }
+              action == "begin" || action == "end" || action == "inspect" else { throw LeaseError.invalid }
+        guard (action == "begin" && state == .preparing) || (action == "end" && state == .ending) ||
+              (action == "inspect" && state == .restorationPending && now >= deadline + 300) else { throw LeaseError.invalid }
         guard pending == nil, !usedNonces.contains(nonce) else { throw LeaseError.invalid }
         if action == "begin" && now >= deadline { throw LeaseError.invalid }
         if action == "end" && now > deadline + 300 { throw LeaseError.invalid }
@@ -45,9 +46,12 @@ public struct QuietLease {
         if action == "begin" {
             guard state == .preparing else { return false }
             state = observed == "iCTRL Automation" ? .quietVerified : .failed
-        } else {
+        } else if action == "end" {
             guard state == .ending else { return false }
             state = !beginUncertain && (observed == "off" || observed == "preserved_user_focus") ? .ended : .restorationPending
+        } else {
+            guard state == .restorationPending else { return false }
+            state = (observed == "off" || observed == "preserved_user_focus") ? .ended : .restorationPending
         }
         return true
     }
@@ -74,6 +78,7 @@ public struct QuietLease {
 
     public mutating func suspend() { state = .suspended; pending = nil }
     public mutating func markRestorationPending() { state = .restorationPending; pending = nil }
+    public var hasPendingCallback: Bool { pending != nil }
     public mutating func failPending(now: TimeInterval) {
         if state == .ending { state = .restorationPending }
         else if now >= deadline { state = .expired }

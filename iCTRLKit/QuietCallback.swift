@@ -24,7 +24,7 @@ public struct QuietCallback: Decodable {
               headerBytes >= 0, headerBytes <= 4096, body.count <= 1024 else { throw LeaseError.invalid }
         let value = try JSONDecoder().decode(Self.self, from: body)
         guard value.nonce.range(of: "^[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil,
-              value.action == "begin" || value.action == "end",
+              value.action == "begin" || value.action == "end" || value.action == "inspect",
               ["iCTRL Automation", "previous_focus_active", "unavailable", "off", "preserved_user_focus"].contains(value.observed_focus),
               ISO8601DateFormatter().date(from: value.deadline) != nil else { throw LeaseError.invalid }
         return value

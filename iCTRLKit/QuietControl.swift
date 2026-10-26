@@ -123,8 +123,9 @@ final class QuietControl {
     }
 
     private func shortcutURL(name: String, action: String, nonce: String, deadline: String) throws -> URL {
-        let input = ["action": action, "nonce": nonce, "deadline": deadline,
+        var input = ["action": action, "nonce": nonce, "deadline": deadline,
                      "callback": "http://127.0.0.1:\(port)/quiet-callback"]
+        if action == "inspect" { input["inspect_only"] = "1" }
         let data = try JSONSerialization.data(withJSONObject: input)
         var components = URLComponents()
         components.scheme = "shortcuts"
@@ -200,6 +201,20 @@ final class QuietControl {
         lock.unlock()
         guard let current, current.state != .ended else { return nil }
         return try end(owner: current.ownerTokId, id: current.id, now: now)
+    }
+
+    func inspectForManual(owner: String, now: TimeInterval) throws -> Launch {
+        lock.lock(); defer { lock.unlock() }
+        expire(now)
+        guard modes[owner] == "manual", !storageFailed else { throw Failure.forbidden }
+        guard var value = lease, value.state == .restorationPending,
+              now.isFinite, now >= value.deadline + 300, !value.hasPendingCallback else { throw Failure.busy }
+        let nonce = try Self.random()
+        let deadline = wallDeadline ?? ""
+        try value.prepareCallback(nonce: nonce, action: "inspect", expectedDeadline: deadline, now: now)
+        let url = try shortcutURL(name: "iCTRL Quiet Inspect End", action: "inspect", nonce: nonce, deadline: deadline)
+        lease = value; pendingUntil = now + 30; pendingAction = "inspect"
+        return Launch(url: url, leaseID: value.id, deadline: deadline)
     }
 
     @discardableResult func callback(_ report: QuietCallback, now: TimeInterval) -> Bool {
