@@ -15,11 +15,12 @@ struct RPCMethodDef: Encodable {
 }
 
 struct RPCMethodRegistry {
-    static let methods: [RPCMethodDef] = [
+    static let methods: [RPCMethodDef] = NativeRPCMethodDefinitions.methods + [
         RPCMethodDef(
             name: "config",
             description: "Read or update server settings and manage authorized sessions. With no params: returns current config plus the list of authorized sessions (client name, masked token prefix, granted/expiry times). Pass allow_remote_access and/or listen_port to change settings (persisted; server restarts, dropping the connection — reconnect at the returned address). Pass revoke_session_id to remove one session, or clear_sessions=true to revoke ALL tokens (including your own). Pass stop_server=true to SHUT DOWN the service (stops listening after replying; re-launch the runner to restart — tokens are preserved so no re-auth is needed).",
             params: [
+                RPCParamDef(name: "keep_awake", type: "boolean", required: false, description: "Disable Auto-Lock only while this runner itself is foreground and serving. Does not keep other apps awake or unlock the device."),
                 RPCParamDef(name: "allow_remote_access", type: "boolean", required: false, description: "true = listen on all interfaces (LAN reachable); false = 127.0.0.1 only"),
                 RPCParamDef(name: "listen_port", type: "number", required: false, description: "TCP port to listen on (1..65535, default 8200)"),
                 RPCParamDef(name: "revoke_session_id", type: "string", required: false, description: "session_id of a single authorization to revoke"),
@@ -375,7 +376,7 @@ struct RPCMethodRegistry {
     /// release that added the encrypted auth channel plus the docs/Skill,
     /// clear-text, page-source, and reliability improvements. Single source of
     /// truth for /schema AND device_info.
-    static let serverVersion = "1.98.12"
+    static let serverVersion = "1.98.12-krkr.native2"
 
     /// When this binary was built, as "YYYY-MM-DD HH:MM".
     ///
@@ -395,6 +396,7 @@ struct RPCMethodRegistry {
     /// call (no separate /schema fetch needed). Keep in sync with what the server
     /// actually implements.
     static let capabilityTags: [String] = [
+        "native_clipboard_v1", "runtime_status_v1", "foreground_keep_awake_v1",
         "envelope_v1",         // /pair + encrypted /rpc envelopes (HMAC-SHA256)
         "stream_ticket",       // stream_ticket RPC → single-use ?ticket= for /stream + /logs
         "video_stream",        // GET /stream (H.264-in-MPEG-TS live screen)

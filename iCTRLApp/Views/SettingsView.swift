@@ -17,6 +17,7 @@ struct SettingsView: View {
     @State private var launchFailed = false
     @State private var showMountSheet = false
     @StateObject private var runner = RunnerStatus(port: 8200)
+    @AppStorage("keepAwakeWhileServing") private var keepAwakeWhileServing = true
     @EnvironmentObject private var runnerAdmin: RunnerAdmin
     @State private var logCount = AppLog.allFiles().count
 
@@ -93,6 +94,14 @@ struct SettingsView: View {
             }
 
             serverSection
+            Section {
+                Toggle("Keep awake while iCTRL is foreground", isOn: $keepAwakeWhileServing)
+                Button("Prepare iCTRL (check DDI and start)") {
+                    Task { _ = await StartupCoordinator.shared.prepare(keepAwake: keepAwakeWhileServing); await runner.check() }
+                }
+            } footer: {
+                Text("Prepare applies this setting to Runner too. It applies only while iCTRL or Runner is foreground and serving. To prevent Auto-Lock while controlling other apps, keep Settings → Display & Brightness → Auto-Lock set to Never. This cannot bypass a locked screen.")
+            }
 
             deviceSection
 
@@ -134,10 +143,15 @@ struct SettingsView: View {
         .onAppear {
             ddi = DeveloperDiskImage.status()
             logCount = AppLog.allFiles().count
+            ForegroundKeepAwake.shared.install()
+            ForegroundKeepAwake.shared.setEnabled(keepAwakeWhileServing)
             runner.startPolling()
         }
         .onDisappear { runner.stopPolling() }
+        .onChange(of: runner.isRunning) { ForegroundKeepAwake.shared.setServiceRunning($0) }
+        .onChange(of: keepAwakeWhileServing) { ForegroundKeepAwake.shared.setEnabled($0) }
         .onOpenURL { url in
+            StartupCoordinator.shared.receive(url)
             // The runner bounced back: ictrl-app://started?status=…&address=…
             guard url.scheme == "ictrl-app" else { return }
             // ictrl-app://started or ictrl-app://stopped

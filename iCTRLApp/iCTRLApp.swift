@@ -37,7 +37,7 @@ struct iCTRLApp: App {
             // A pairing file shared to iCTRL from another app (Files, Mail,
             // AirDrop, a chat): validate, store, and say so either way.
             .onOpenURL { url in
-                guard url.isFileURL else { return }
+                guard url.isFileURL else { StartupCoordinator.shared.receive(url); return }
                 let name = url.lastPathComponent
                 do {
                     try PairingFileStore.importShared(from: url)

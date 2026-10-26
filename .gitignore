@@ -20,3 +20,16 @@ release/
 
 # Per-developer signing (Scripts/setup-signing.sh)
 Config/Local.xcconfig
+
+# Foundation-only SwiftPM policy tests
+.build/
+.swiftpm/
+
+# Device-specific credentials and provisioning must remain local.
+*.mobiledevicepairing
+*.mobileprovision
+*.p12
+*.p8
+*Pairing*.plist
+.state/
+.env

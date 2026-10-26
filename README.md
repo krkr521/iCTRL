@@ -2,6 +2,11 @@
 
 **AI-friendly iOS automation service, built on XCUITest.**
 
+This fork adds native plain-text clipboard RPCs, service/DDI AppIntents, and
+on-device coordination for renewal through iPhone Shortcuts. See
+[the fork's additions and limits](docs/native-automation.md) for the API,
+phone-local state, and unsigned build instructions.
+
 > [!WARNING]
 > **For automated testing and research only.** iCTRL hands full control of a
 > phone (taps, text input, screen contents, every installed app) to whoever

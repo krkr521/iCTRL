@@ -1,5 +1,11 @@
 .PHONY: build ipa clean help
 
+ifeq ($(ICTRL_UNSIGNED),1)
+XCODEBUILD_SIGNING_ARGS = CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM=""
+else
+XCODEBUILD_SIGNING_ARGS = -allowProvisioningUpdates
+endif
+
 PROJECT       = iCTRL.xcodeproj
 SCHEME        = iCTRL
 DERIVED_DATA  = build
@@ -24,7 +30,11 @@ RUNNER_IPA    = iCTRLUITests-Runner.ipa
 # signing config is per developer. Both are produced on demand, so
 # `git clone` → `make ipa` works with nothing else set up.
 Config/Local.xcconfig:
+ifeq ($(ICTRL_UNSIGNED),1)
+	@printf '// Unsigned build: no developer account or signing identity.\n' > "$@"
+else
 	@./Scripts/setup-signing.sh
+endif
 
 $(PROJECT)/project.pbxproj: project.yml Config/Signing.xcconfig Config/Local.xcconfig
 	@command -v xcodegen >/dev/null || { echo "❌ xcodegen not found — brew install xcodegen"; exit 1; }
@@ -42,7 +52,7 @@ build:
 		-derivedDataPath $(DERIVED_DATA) \
 		-scheme $(SCHEME) \
 		-destination "generic/platform=iOS" \
-		-allowProvisioningUpdates \
+		$(XCODEBUILD_SIGNING_ARGS) \
 		ARCHS=arm64
 	@echo ""
 	@echo "✅ Build completed"
@@ -108,8 +118,16 @@ ipa: build
 	APP="$(BUILD_DIR)/$(RUNNER_APP)"; \
 	if otool -L "$$APP/$(RUNNER_BIN)" | grep -q libXCTCompatShim; then \
 		echo "   ✅ shim already present — skipping"; \
+		printf 'already-present\n' > "$(DERIVED_DATA)/native-compat-status.txt"; \
 		exit 0; \
 	fi; \
+	UNDEFINED="$$(xcrun nm -u "$$APP/$(RUNNER_BIN)")"; \
+	if ! printf '%s\n' "$$UNDEFINED" | grep -Fq '_OBJC_CLASS_$$_XCTCommandLineToolHelper'; then \
+		echo "   ✅ no undefined XCTCommandLineToolHelper reference — compat shim not required"; \
+		printf 'not-required-no-reference\n' > "$(DERIVED_DATA)/native-compat-status.txt"; \
+		exit 0; \
+	fi; \
+	echo "   🩹 undefined XCTCommandLineToolHelper reference confirmed — strict shim patch required"; \
 	SDK="$$(xcrun --sdk iphoneos --show-sdk-path)"; \
 	mkdir -p "$$APP/Frameworks"; \
 	xcrun -sdk iphoneos clang -dynamiclib -arch arm64 -isysroot "$$SDK" \
@@ -125,7 +143,8 @@ ipa: build
 		'_OBJC_CLASS_$$_XCTCommandLineToolHelper' "$$ORD"; \
 	python3 Scripts/retarget-undef-symbol.py "$$TMP" \
 		'_OBJC_CLASS_$$_XCTCommandLineToolHelper' libXCTCompatShim; \
-	mv "$$TMP" "$$BIN"
+	mv "$$TMP" "$$BIN"; \
+	printf 'applied\n' > "$(DERIVED_DATA)/native-compat-status.txt"
 	@echo "🧹 Removing dSYM debug symbols from the app..."
 	@# build-for-testing embeds a .dSYM inside the app; it is debug-symbol data,
 	@# not needed at runtime, and bloats the IPA (~3MB). Strip it before packaging.
@@ -164,10 +183,11 @@ ipa: build
 	@# the keychain to pin the exact identity.
 	@set -e; \
 	APP="$(BUILD_DIR)/$(RUNNER_APP)"; \
+	if [ "$(ICTRL_UNSIGNED)" = "1" ]; then IDENT="-"; AUTH="ad-hoc (re-sign on device)"; else \
 	AUTH="$$(codesign -dvv "$$APP" 2>&1 | sed -n 's/^Authority=//p' | head -1)"; \
 	if [ -z "$$AUTH" ]; then echo "🔴 could not read signing identity from $$APP"; exit 1; fi; \
 	SHA="$$(security find-identity -v -p codesigning 2>/dev/null | grep -F "$$AUTH" | head -1 | awk '{print $$2}')"; \
-	IDENT="$${SHA:-$$AUTH}"; \
+	IDENT="$${SHA:-$$AUTH}"; fi; \
 	echo "   using: $$AUTH ($$IDENT)"; \
 	for dylib in "$$APP/Frameworks/"*.dylib; do \
 		[ -f "$$dylib" ] || continue; \
@@ -175,7 +195,8 @@ ipa: build
 		codesign --force --sign "$$IDENT" "$$dylib"; \
 	done; \
 	codesign --force --sign "$$IDENT" "$$APP/PlugIns/$(XCTEST_BUNDLE)"; \
-	codesign --force --sign "$$IDENT" --preserve-metadata=entitlements "$$APP"
+	codesign --force --sign "$$IDENT" --preserve-metadata=entitlements "$$APP"; \
+	if [ "$(ICTRL_UNSIGNED)" = "1" ]; then codesign --force --timestamp=none --sign - "$(BUILD_DIR)/$(MAIN_APP)"; fi
 	@# Everything dyld loads must carry a signature — an unsigned dylib in
 	@# Frameworks/ makes the runner die at launch with "mapped file has no
 	@# cdhash", which looks nothing like a signing problem from the device side.

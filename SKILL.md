@@ -1,7 +1,7 @@
 ---
 name: ictrl-phone-control
 description: Control an iPhone over HTTP to automate real apps — tap, type, swipe, read the screen's view tree, launch apps, take screenshots. Use when the user asks to operate a phone, drive an iOS app, automate a mobile task (search a product, check an order, fill a form), or inspect what's on a device's screen. The service is iCTRL, JSON-RPC 2.0 on port 8200; requests are encrypted, so drive it with a client downloaded from the device (a static CLI needing no interpreter, or a Python one) rather than hand-written HTTP.
-skill_version: "1.98.12"
+skill_version: "1.98.12-krkr.native2"
 ---
 
 # iCTRL — control an iPhone over HTTP
@@ -146,3 +146,12 @@ Most responses carry a **`hint`** (what limited the result, what to do next) —
 ## Protocol
 
 No bundled client usable → the Python client (`GET /skill/clients/python`) is the reference for pairing (X25519) and the request envelope (HMAC-SHA256). Follow it exactly.
+
+
+## Native clipboard and startup (krkr.native1)
+
+Feature-detect `native_clipboard_v1` before using `clipboard_get`, `clipboard_set`, or `clipboard_clear`. These methods use the native iOS plain-text clipboard (65536 UTF-8 bytes maximum; NUL unsupported), may briefly foreground Runner, and restore the original app when safely identifiable. Respect iOS paste permission prompts. A `-32040` failure has `reason`, `mutation_started`, `may_have_completed`, and `requires_user_action`; **never automatically repeat a timed-out clipboard mutation**. Clipboard bodies are not logged or persisted.
+
+`runtime_status` exposes actual Runner/DDI state, Runner's own profile expiry, bundle/team metadata and `keep_awake_scope:foreground_app_only`. `config{keep_awake:true}` only prevents Auto-Lock while this Runner is foreground and serving. Other foreground apps still need the system Auto-Lock setting; it never unlocks a phone.
+
+The companion app provides **Prepare iCTRL** and **Check iCTRL Readiness** AppIntents, plus local `ictrl-app://prepare` and `ictrl-app://status` URLs. Prepare checks DDI, mounts cached images using an already connected LocalDevVPN if needed, starts Runner and probes its actual loopback schema. It returns a JSON string with `ok` and an actionable `reason`. `Record iCTRL Renewal Progress` records only a local Shortcut UUID/time receipt, never renewal success. Runner `runtime_status` includes non-sensitive companion dates/receipt relayed during Prepare with `companion_metadata_source:local_companion_report` and `companion_metadata_verified:false`; this custom-URL relay is not authenticated companion identity. Runner expiry is read from its own installed profile; SideStore's profile cannot be read across its sandbox. After renewal verify that both available profile dates actually increased and have sufficient remaining validity; a URL open or progress receipt alone proves no renewal.

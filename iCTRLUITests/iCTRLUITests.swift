@@ -454,6 +454,8 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
         }
 
         keepRunning = true
+        ForegroundKeepAwake.shared.install()
+        ForegroundKeepAwake.shared.setServiceRunning(server?.isRunning ?? false)
         wireServerStateChange()
         observeNetworkChanges()
         requestLocalNetworkAtLaunch()
@@ -519,6 +521,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
             }
         }
         safetyTimer.invalidate()
+        ForegroundKeepAwake.shared.setServiceRunning(false)
         // Only reached when keepRunning was set false (stop_server / notification /
         // config restart). If we ever get here unexpectedly, the log shows it.
         Self.logBuffer.append("🔁 run loop exited (keepRunning=false)")
@@ -638,7 +641,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
     }
 
     private func handleOneURL(_ url: URL) {
-        Self.logBuffer.append("🔗 handling \(url.absoluteString)")
+        Self.logBuffer.append("🔗 handling \(url.scheme ?? "")://\(url.host ?? "")")
         let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let items = comps?.queryItems ?? []
 
@@ -672,6 +675,11 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
             return
         }
 
+        if let report = CompanionRuntimeMetadata.parse(startURL: url) {
+            companionMetadataLock.lock(); companionMetadata = report; companionMetadataLock.unlock()
+        }
+        if let raw = items.first(where: { $0.name == "keep_awake" })?.value,
+           ["0", "1"].contains(raw) { ForegroundKeepAwake.shared.setEnabled(raw == "1") }
         guard let callbackRaw = items.first(where: { $0.name == "callback" })?.value,
               !callbackRaw.isEmpty,
               let callbackURL = Self.normalizeCallback(callbackRaw) else {
@@ -698,6 +706,13 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
         var q = cb?.queryItems ?? []
         q.append(URLQueryItem(name: "status", value: status))
         q.append(URLQueryItem(name: "address", value: address))
+        if items.first(where: { $0.name == "include_profile_expiry" })?.value == "1" {
+            let expiry = ProvisioningExpiry.currentISO8601()
+            q.append(URLQueryItem(name: "runner_profile_expiry_available", value: expiry == nil ? "0" : "1"))
+            if let expiry { q.append(URLQueryItem(name: "runner_profile_expires_at", value: expiry)) }
+            if let id = Bundle.main.bundleIdentifier { q.append(URLQueryItem(name: "runner_bundle_id", value: id)) }
+            if let team = ProvisioningExpiry.currentTeamIdentifier() { q.append(URLQueryItem(name: "runner_team_identifier", value: team)) }
+        }
         cb?.queryItems = q
 
         guard let finalURL = cb?.url else {
@@ -959,6 +974,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
 
     private func wireServerStateChange() {
         server?.onStateChange = { [weak self] running in
+            ForegroundKeepAwake.shared.setServiceRunning(running)
             if !running {
                 Self.logBuffer.append("Server stopped")
                 self?.keepRunning = false
@@ -1002,7 +1018,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
     /// Diagnosis and recovery must not queue behind the fault they diagnose, so
     /// they get their own lane. Every method here must be free of XCUITest APIs.
     private static let nonUIMethods: Set<String> = [
-        "config", "reset", "is_locked", "logs", "recent_logs",
+        "runtime_status", "config", "reset", "is_locked", "logs", "recent_logs",
         "resolve_app", "search_app", "search_apps",
         "list_apps", "installed_apps",
         // Class-metadata introspection only — takes no snapshot, touches no
@@ -1155,6 +1171,25 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
     }
 
     /// Wire RPC dispatch + public logs onto a server instance.
+    private let nativeClipboard = NativeClipboardService()
+    private let companionMetadataLock = NSLock()
+    private var companionMetadata: [String: JSONValue] = ["companion_metadata_source": .string("unavailable"), "companion_metadata_verified": .bool(false), "renewal_receipt": .null]
+
+    private func runtimeStatus() -> [String: JSONValue] {
+        var result = ForegroundKeepAwake.shared.snapshot()
+        companionMetadataLock.lock(); let metadata = companionMetadata; companionMetadataLock.unlock()
+        result.merge(metadata) { _, fresh in fresh }
+        let expiry = ProvisioningExpiry.currentISO8601()
+        result["server_running"] = .bool(server?.isRunning ?? false)
+        result["server_version"] = .string(RPCMethodRegistry.serverVersion)
+        result["ddi_mounted"] = .bool(DeveloperDiskImage.status().isMounted)
+        result["runner_profile_expires_at"] = expiry.map(JSONValue.string) ?? .null
+        result["runner_profile_expiry_available"] = .bool(expiry != nil)
+        result["bundle_id"] = Bundle.main.bundleIdentifier.map(JSONValue.string) ?? .null
+        result["team_identifier"] = ProvisioningExpiry.currentTeamIdentifier().map(JSONValue.string) ?? .null
+        return result
+    }
+
     private func configureServerCallbacks(_ srv: JSONRPCServer) {
         // Advertising can start late (awdl0 appears once Wi-Fi is on), so the
         // status notification follows the advertiser rather than the toggle.
@@ -1176,6 +1211,19 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
         srv.onRPCRequest = { [weak self] method, params, completion in
             guard let self = self else {
                 completion(nil, .internalError)
+                return
+            }
+
+            if NativeClipboardRequest.methods.contains(method) {
+                // The envelope/auth checks have already run. Never log payloads,
+                // including errors; timing and method name are sufficient.
+                var values = params ?? [:]
+                values.removeValue(forKey: JSONRPCServer.peerSourceParam)
+                let start = ProcessInfo.processInfo.systemUptime
+                self.nativeClipboard.handle(method: method, params: values) { result, error in
+                    Self.logBuffer.recordTiming(method: method, ms: (ProcessInfo.processInfo.systemUptime - start) * 1000, ok: error == nil, quiet: true)
+                    completion(result, error)
+                }
                 return
             }
 
@@ -1243,7 +1291,9 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 // wrap it in an Obj-C @try/@catch so a stale/non-hittable element
                 // turns into a JSON-RPC error instead of a SIGABRT.
                 let work = {
-                    if method == "config" {
+                    if method == "runtime_status" {
+                        result = (self.runtimeStatus(), nil)
+                    } else if method == "config" {
                         result = self.handleConfig(params)
                     } else if let handler = self.actionHandler {
                         let reason = ObjCException.catching {
@@ -1373,6 +1423,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
     private func applyConfig(_ params: [String: JSONValue]?) -> ([String: JSONValue]?, JSONRPCError?) {
         // Validate everything before changing anything: a request refused
         // half-way must not leave some settings applied and others not.
+        if let value = params?["keep_awake"], value.boolValue == nil { return (nil, .invalidParams) }
         let remoteTarget = params?["allow_remote_access"]?.boolValue ?? remoteAccessEnabled
         if params?["nearby_discovery"]?.boolValue == true && !nearbyEnabled {
             // Switching it ON widens who can reach the device, so it is
@@ -1397,6 +1448,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
             return (nil, JSONRPCError(code: -32602, message: "listen_port must be 1..65535", data: nil))
         }
 
+        if let enabled = params?["keep_awake"]?.boolValue { ForegroundKeepAwake.shared.setEnabled(enabled) }
         var restartNeeded = false
         var newPort = UInt16(server?.port ?? 8200)
         var clearedSessions = 0
@@ -1566,6 +1618,8 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
             ])
         }
         result["timing"] = .array(timing)
+        result.merge(ForegroundKeepAwake.shared.snapshot()) { _, latest in latest }
+        result["keep_awake"] = result["keep_awake_enabled"]
 
         return (result, nil)
     }
