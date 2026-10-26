@@ -113,17 +113,7 @@ targets:
     postBuildScripts:
       - name: "Strip unnecessary XCTest frameworks"
         script: |
-          set -eu
           RUNNER_APP="${BUILT_PRODUCTS_DIR}/iCTRLUITests-Runner.app"
-          # XCTest generates the host app from its own template; stamp its
-          # actual plist explicitly rather than assuming test-bundle settings
-          # propagate to that separately generated application.
-          RUNNER_PLIST="${RUNNER_APP}/Info.plist"
-          test -n "${MARKETING_VERSION}" && test -n "${CURRENT_PROJECT_VERSION}"
-          test -f "${RUNNER_PLIST}"
-          PB=/usr/libexec/PlistBuddy
-          "$PB" -c "Set :CFBundleShortVersionString ${MARKETING_VERSION}" "$RUNNER_PLIST" || "$PB" -c "Add :CFBundleShortVersionString string ${MARKETING_VERSION}" "$RUNNER_PLIST"
-          "$PB" -c "Set :CFBundleVersion ${CURRENT_PROJECT_VERSION}" "$RUNNER_PLIST" || "$PB" -c "Add :CFBundleVersion string ${CURRENT_PROJECT_VERSION}" "$RUNNER_PLIST"
           echo "🔧 Stripping XCTest frameworks from Runner.app..."
           rm -rf "${RUNNER_APP}/Frameworks/XCTAutomationSupport.framework"
           rm -rf "${RUNNER_APP}/Frameworks/XCTest.framework"
