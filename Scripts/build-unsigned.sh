@@ -7,6 +7,7 @@ command -v xcodegen >/dev/null || { echo "Install xcodegen (brew install xcodege
 xcodebuild -version
 python3 Scripts/test-native-build-manifest.py
 mkdir -p build
+swift test --package-path Experiments/QuietSession | tee build/quiet-prototype-tests.log
 swift test | tee build/swift-policy-tests.log
 ./Scripts/test-continuous-drag.sh | tee build/continuous-drag-tests.log
 mkdir -p build/dependencies
