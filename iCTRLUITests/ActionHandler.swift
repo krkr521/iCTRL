@@ -419,6 +419,23 @@ class ActionHandler {
     }
 
     func dispatch(method: String, params: [String: JSONValue]?) -> ([String: JSONValue]?, JSONRPCError?) {
+        #if DEBUG
+        if method == "shade_probe" {
+            let arguments = params ?? [:]
+            guard arguments.keys.allSatisfy({ $0 == "attempt_restore" }),
+                  arguments["attempt_restore"] == nil || arguments["attempt_restore"]?.boolValue != nil else {
+                return (nil, .invalidParams)
+            }
+            // This method reaches the existing authenticated, serial UI lane.
+            // It deliberately does not capture the screen or inject a touch.
+            let report = ICShadeProbe.inspectAndAttemptRestore(arguments["attempt_restore"]?.boolValue == true)
+            guard let data = try? JSONSerialization.data(withJSONObject: report),
+                  let decoded = try? JSONDecoder().decode([String: JSONValue].self, from: data) else {
+                return (nil, .internalError)
+            }
+            return (decoded, nil)
+        }
+        #endif
         let cmd = ActionCommand(method: method, params: params)
         readFrame = nil
         if let t = cmd.elementType, let raws = Self.typeFilterRaws(t), raws.isEmpty {

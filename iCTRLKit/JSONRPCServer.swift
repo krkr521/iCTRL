@@ -3,6 +3,7 @@ import Foundation
 import Network
 
 class JSONRPCServer {
+    private let fileTransfers = FileTransferStore()
     private var listener: NWListener?
     private var connections: [NWConnection] = []
     /// Connections handed off to a long-lived streamer (video) — the base receive
@@ -396,6 +397,26 @@ class JSONRPCServer {
 
             var acc = buffer
             if let data = data, !data.isEmpty { acc.append(data) }
+            // Bound unauthenticated accumulation before parsing or decrypting.
+            let delimiter = Data([13, 10, 13, 10])
+            if let header = acc.range(of: delimiter) {
+                let text = String(data: acc[..<header.lowerBound], encoding: .utf8) ?? ""
+                let lengths = text.components(separatedBy: "\r\n").compactMap { line -> String? in
+                    let fields = line.split(separator: ":", maxSplits: 1)
+                    guard fields.count == 2, fields[0].lowercased() == "content-length" else { return nil }
+                    return fields[1].trimmingCharacters(in: .whitespaces)
+                }
+                let transferEncoded = text.components(separatedBy: "\r\n").contains { $0.lowercased().hasPrefix("transfer-encoding:") }
+                if header.upperBound > 16 * 1024 || lengths.count > 1 || transferEncoded ||
+                    lengths.contains(where: { Int($0) == nil || (Int($0) ?? -1) < 0 || (Int($0) ?? 0) > 512 * 1024 }) ||
+                    acc.count - header.upperBound > 512 * 1024 {
+                    self.sendHTTPResponse(connection: connection, status: 413, body: "Request too large or unsupported framing")
+                    return
+                }
+            } else if acc.count > 16 * 1024 {
+                self.sendHTTPResponse(connection: connection, status: 413, body: "Headers too large")
+                return
+            }
 
             // A full HTTP request needs the header terminator AND, for a body, the
             // whole Content-Length. If we don't have it all yet, keep receiving —
@@ -1070,6 +1091,14 @@ class JSONRPCServer {
             return
         }
 
+        if FileTransferRPCMethods.names.contains(rpcRequest.method) {
+            let reply = fileTransfers.call(rpcRequest.method, params: rpcRequest.params ?? [:], owner: opened.tokId)
+            let json = reply.error.map { Self.errorJSON(rpcRequest.id, $0) }
+                ?? Self.resultJSON(rpcRequest.id, reply.result ?? [:])
+            sendSealed(connection, seal: seal, json: json)
+            return
+        }
+
         guard let handler = onRPCRequest else {
             sendSealed(connection, seal: seal, json: Self.errorJSON(rpcRequest.id, .internalError))
             return
@@ -1219,6 +1248,7 @@ class JSONRPCServer {
         case 401: statusText = "Unauthorized"
         case 403: statusText = "Forbidden"
         case 404: statusText = "Not Found"
+        case 413: statusText = "Content Too Large"
         case 429: statusText = "Too Many Requests"
         case 500: statusText = "Internal Server Error"
         default: statusText = "Unknown"

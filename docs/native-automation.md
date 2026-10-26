@@ -74,3 +74,18 @@ drag paths. It retains the native clipboard and renewal actions. The path tests
 use the fork's split core types, and long paths retain post-action settling
 within their extended watchdog budget. Device validation of this integration is
 reported separately from compilation and policy tests.
+
+Version `1.98.13-krkr.native4` adds explicit encrypted file-transfer queues and a
+Share Extension. The extension pairs independently with the Runner. Incoming
+computer files stay pending until the companion is foreground, verifies them,
+and saves them without overwriting existing files in its Documents directory.
+That directory is exposed as iCTRL in Files. Pairing records and DDI data remain
+in Application Support. Saved acknowledgements are client reports, not process
+attestation. Chunks are limited to 192 KiB and each file to 256 MiB.
+
+Debug builds also expose `shade_probe` as a single-attempt experiment on an
+existing XCTest session. Inspection is non-mutating by default. An explicit
+restore call has no safe cancellation hook and must not be retried after a
+timeout. Its return value does not establish physical screen state; the system
+overlay is omitted from XCTest screenshots. No automatic shade policy is
+enabled by this build.

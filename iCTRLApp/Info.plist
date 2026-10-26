@@ -57,8 +57,10 @@
 			</dict>
 		</dict>
 	</array>
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<false/>
+	<true/>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_ictrl._tcp</string>

@@ -31,6 +31,8 @@ targets:
       # actual DDI mount. Fetched by Scripts/fetch-idevice.sh rather than
       # committed: the upstream xcframework is a 215MB release asset and is not
       # in the repo tree, so SPM cannot resolve it by URL.
+      - target: iCTRLShare
+        embed: true
       - framework: Frameworks/IDevice.xcframework
         embed: false
     settings:
@@ -52,6 +54,26 @@ targets:
         # iOS denies UIApplication.open() for these schemes with no error, which
         # would break the Start button and the StikDebug shortcut.
         INFOPLIST_FILE: iCTRLApp/Info.plist
+
+  iCTRLShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: iCTRLShare
+      - path: iCTRLApp/Models/RunnerClient.swift
+      - path: iCTRLKit/SecureEnvelope.swift
+      - path: iCTRLKit/KeychainStore.swift
+      - path: iCTRLKit/RPCCoreTypes.swift
+      - path: iCTRLKit/FileTransferStore.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: "$(ICTRL_BUNDLE_PREFIX).ictrl.share"
+        INFOPLIST_FILE: iCTRLShare/Info.plist
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "iCTRL Share sends explicitly shared files to the authenticated Runner on this device."
 
   iCTRLUITests:
     type: bundle.ui-testing

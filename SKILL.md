@@ -1,7 +1,7 @@
 ---
 name: ictrl-phone-control
 description: Control iPhone apps with iCTRL's encrypted HTTP API. Tap, type, swipe, read UI and take screenshots with its CLI or Python client.
-skill_version: "1.98.13-krkr.native3"
+skill_version: "1.98.13-krkr.native4"
 ---
 
 # iCTRL — control an iPhone over HTTP
@@ -124,6 +124,8 @@ Read response **`hint`**, especially on empty or negative results.
 - Coordinate actions/`type` return `page_check`; **`same_page:false`** means the screen changed before the action. Read and check what you hit.
 
 ## Coordinates and screenshots
+
+Files: `file_transfer_v1` handles explicit transfer queues (192 KiB chunks, 256 MiB max). Use client file commands for local paths; a browser download click does not prove disk-save success.
 
 - `tap`/`swipe`/`drag`, `page_source` frames and OCR boxes are all **points**.
 - `drag{points:[{x,y},...],duration?}`: one finger, 2–64 waypoints, no lift at corners. Duration 0.1–10s (default 1), equal time per segment; repeated points hold. Do not mix with endpoint coordinates/refs.

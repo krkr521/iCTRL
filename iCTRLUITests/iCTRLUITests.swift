@@ -1187,7 +1187,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
     /// client waiting for the real answer.
     // screen_text: OCR alone can take seconds on a busy or thermally
     // throttled device, pushing a normally finishing call past 6s.
-    private static let extendedTimeoutMethods: Set<String> = ["page_source", "find_and_tap", "tap_element", "collect", "screen_text"]
+    private static let extendedTimeoutMethods: Set<String> = ["page_source", "find_and_tap", "tap_element", "collect", "screen_text", "shade_probe"]
     private static let extendedRpcTimeout: TimeInterval = 15
 
     private static func rpcBudget(for method: String, params: [String: JSONValue]?) -> TimeInterval {

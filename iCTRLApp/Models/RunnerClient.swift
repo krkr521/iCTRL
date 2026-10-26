@@ -41,7 +41,8 @@ final class RunnerClient {
 
     /// What the runner shows in its approval prompt and client list.
     static let clientName = "iCTRL App"
-    private static let keychainAccount = "runner-admin"
+    private let keychainAccount: String
+    private let pairingName: String
 
     private struct Record: Codable {
         var key: String   // hex, 32 bytes
@@ -51,9 +52,11 @@ final class RunnerClient {
     let port: Int
     private var record: Record?
 
-    init(port: Int) {
+    init(port: Int, clientName: String = RunnerClient.clientName, account: String = "runner-admin") {
+        self.keychainAccount = account
+        self.pairingName = clientName
         self.port = port
-        if let data = KeychainStore.load(account: Self.keychainAccount) {
+        if let data = KeychainStore.load(account: keychainAccount) {
             record = try? JSONDecoder().decode(Record.self, from: data)
         }
     }
@@ -64,7 +67,7 @@ final class RunnerClient {
 
     func forget() {
         record = nil
-        KeychainStore.clear(account: Self.keychainAccount)
+        KeychainStore.clear(account: keychainAccount)
     }
 
     // MARK: - Pairing
@@ -75,7 +78,7 @@ final class RunnerClient {
         let priv = Curve25519.KeyAgreement.PrivateKey()
         let pub = priv.publicKey.rawRepresentation
         let (status, body) = try await post("/pair", json: [
-            "client_name": Self.clientName,
+            "client_name": pairingName,
             "pub": pub.base64EncodedString(),
         ], timeout: 90)
 
@@ -105,7 +108,7 @@ final class RunnerClient {
         let rec = Record(key: key.hexString, tok: SecureEnvelope.tokenId(for: key))
         record = rec
         if let data = try? JSONEncoder().encode(rec) {
-            KeychainStore.save(data, account: Self.keychainAccount)
+            KeychainStore.save(data, account: keychainAccount)
         }
     }
 

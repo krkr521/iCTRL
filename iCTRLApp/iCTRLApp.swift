@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct iCTRLApp: App {
+    @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var fileReceiver = CompanionFileReceiver()
     @StateObject private var appState = AppState()
     @StateObject private var permission = NetworkPermission()
     /// Clients and log of the runner on this device; shared by Settings and Logs.
@@ -30,6 +32,10 @@ struct iCTRLApp: App {
             }
             .environmentObject(appState)
             .environmentObject(runnerAdmin)
+            .safeAreaInset(edge: .bottom) { Text(fileReceiver.status).font(.caption).padding(6) }
+            .task(id: scenePhase) {
+                if scenePhase == .active { await fileReceiver.run() }
+            }
             .sheet(item: $appState.pendingAuthRequest) { request in
                 AuthRequestView(request: request)
                     .environmentObject(appState)
