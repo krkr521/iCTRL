@@ -97,6 +97,22 @@ final class StartupCoordinator: ObservableObject {
             let companionAvailable = report["companion_profile_expiry_available"] == .bool(true)
             report["ok"] = .bool(mounted && companionAvailable)
             report["status"] = .string(mounted && companionAvailable ? "running" : "needs_attention")
+            if mounted && companionAvailable,
+               let companionText = report["companion_profile_expires_at"]?.stringValue,
+               let runnerText = report["runner_profile_expires_at"]?.stringValue,
+               let companion = ISO8601DateFormatter().date(from: companionText),
+               let runner = ISO8601DateFormatter().date(from: runnerText),
+               let companionID = report["companion_bundle_id"]?.stringValue,
+               let runnerID = report["runner_bundle_id"]?.stringValue {
+                let snapshot = RenewalProfileSnapshot(companionExpiry: companion, runnerExpiry: runner,
+                    companionBundleID: companionID, runnerBundleID: runnerID,
+                    companionTeam: report["companion_team_identifier"]?.stringValue,
+                    runnerTeam: report["runner_team_identifier"]?.stringValue,
+                    observedAt: Date(), runnerVerified: true)
+                // Transaction rechecks active state (including checkingBefore),
+                // persists only an initial observation, then returns a fresh plan.
+                report["renewal_gate"] = .object(RenewalGateStore.observeInitialProfiles(snapshot))
+            }
             if !mounted { report["reason"] = .string("ddi_missing") }
             else if !companionAvailable { report["reason"] = .string("companion_profile_expiry_unavailable") }
         } catch {

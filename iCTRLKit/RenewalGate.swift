@@ -124,6 +124,29 @@ struct RenewalGateState: Codable, Equatable {
         return report(now: now, calendar: calendar, reason: needsBaseline ? "baseline_needed" : "due", nextAction: "prepare")
     }
 
+    /// Observation-only bootstrap after a fresh authenticated local profile read.
+    /// Never reserves work or changes success/refresh/cooldown history. In
+    /// particular, prepare called by Begin must not race its checkingBefore claim.
+    @discardableResult
+    mutating func observeInitialProfiles(_ snapshot: RenewalProfileSnapshot, now: Date) -> Bool {
+        guard active == nil, lastSuccessAt == nil, lastObservedProfiles == nil, initialDueAt == nil,
+              now.timeIntervalSinceReferenceDate.isFinite,
+              snapshot.companionExpiry.timeIntervalSinceReferenceDate.isFinite,
+              snapshot.runnerExpiry.timeIntervalSinceReferenceDate.isFinite,
+              snapshot.observedAt.timeIntervalSinceReferenceDate.isFinite,
+              snapshot.isFresh(at: now), snapshot.companionExpiry > now, snapshot.runnerExpiry > now,
+              snapshot.companionBundleID != snapshot.runnerBundleID,
+              let team = snapshot.companionTeam, team == snapshot.runnerTeam,
+              team.range(of: "^[A-Z0-9]{10}$", options: .regularExpression) != nil else { return false }
+        for bundle in [snapshot.companionBundleID, snapshot.runnerBundleID] {
+            guard bundle.utf8.count <= 255,
+                  bundle.range(of: "^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+$", options: .regularExpression) != nil else { return false }
+        }
+        lastObservedProfiles = snapshot
+        initialDueAt = min(snapshot.companionExpiry, snapshot.runnerExpiry).addingTimeInterval(-Self.initialLead)
+        return true
+    }
+
     mutating func claimBefore(token: String, now: Date, calendar: Calendar) -> [String: JSONValue] {
         guard let id = UUID(uuidString: token)?.uuidString, active?.id == id else { return report(now: now, calendar: calendar, ok: false, reason: "attempt_mismatch") }
         guard active?.phase == .preparing else { return report(now: now, calendar: calendar, ok: false, reason: "attempt_not_preparing") }
@@ -241,6 +264,15 @@ enum RenewalGateStore {
 
     static func plan(reserveIfDue: Bool = false, defaults: UserDefaults = .standard, now: Date = Date(), calendar: Calendar = .current) -> [String: JSONValue] {
         transact(defaults: defaults, now: now, calendar: calendar) { $0.plan(now: now, reserveIfDue: reserveIfDue, calendar: calendar) }
+    }
+
+    /// Internal local caller only; no RPC accepts profile dates for this entry.
+    static func observeInitialProfiles(_ snapshot: RenewalProfileSnapshot, defaults: UserDefaults = .standard,
+                                       now: Date = Date(), calendar: Calendar = .current) -> [String: JSONValue] {
+        transact(defaults: defaults, now: now, calendar: calendar) { state in
+            state.observeInitialProfiles(snapshot, now: now)
+            return state.plan(now: now, reserveIfDue: false, calendar: calendar)
+        }
     }
 
     static func permitsReceipt(token: String, defaults: UserDefaults = .standard) -> Bool {
