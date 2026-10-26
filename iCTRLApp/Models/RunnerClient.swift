@@ -74,9 +74,10 @@ final class RunnerClient {
 
     /// Ask the runner for a key. Blocks until the user answers the runner's
     /// notification or it times out (60 s on the runner side).
-    func pair() async throws {
+    func pair(onFingerprint: (@MainActor (String) -> Void)? = nil) async throws {
         let priv = Curve25519.KeyAgreement.PrivateKey()
         let pub = priv.publicKey.rawRepresentation
+        await onFingerprint?(Data(SHA256.hash(data: pub).prefix(4)).hexString)
         let (status, body) = try await post("/pair", json: [
             "client_name": pairingName,
             "pub": pub.base64EncodedString(),

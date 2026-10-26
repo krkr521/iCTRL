@@ -33,3 +33,7 @@ Config/Local.xcconfig
 *Pairing*.plist
 .state/
 .env
+
+# Local Python cache
+__pycache__/
+*.py[cod]

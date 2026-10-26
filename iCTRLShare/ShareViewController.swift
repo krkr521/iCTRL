@@ -23,8 +23,10 @@ final class ShareViewController: UIViewController {
         task = Task { @MainActor in
             do {
                 if !client.isPaired {
-                    label.text = "Approve iCTRL Share in the Runner notification, then return here."
-                    try await client.pair()
+                    label.text = "Preparing iCTRL Share pairing key…"
+                    try await client.pair(onFingerprint: { [weak self] fingerprint in
+                        self?.label.text = "iCTRL Share key: \(fingerprint)\nApprove only if the Runner notification shows the same key. Return here after approving."
+                    })
                 }
                 let providers = (extensionContext?.inputItems as? [NSExtensionItem] ?? []).flatMap { $0.attachments ?? [] }
                 guard !providers.isEmpty, providers.count <= 4 else { throw CocoaError(.fileReadUnsupportedScheme) }
@@ -36,8 +38,14 @@ final class ShareViewController: UIViewController {
                 }
                 label.text = "Sent. Download the files from iCTRL on your computer."
                 extensionContext?.completeRequest(returningItems: nil)
-            } catch is CancellationError { extensionContext?.cancelRequest(withError: CocoaError(.userCancelled)) }
-            catch { label.text = "Not sent. Ensure Runner is running and approve iCTRL Share when asked. Keep this sheet open until completion."; task = nil }
+            } catch is CancellationError {
+                label.text = "Cancelled."
+                extensionContext?.cancelRequest(withError: CocoaError(.userCancelled))
+            }
+            catch {
+                label.text = "Not sent. Pairing or transfer failed; do not approve an old Runner request. Try again from this sheet."
+                task = nil
+            }
         }
     }
     @objc private func cancelShare() {
