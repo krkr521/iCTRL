@@ -68,6 +68,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: "$(ICTRL_BUNDLE_PREFIX).ictrl.share"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: 1
         INFOPLIST_FILE: iCTRLShare/Info.plist
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGN_STYLE: Automatic

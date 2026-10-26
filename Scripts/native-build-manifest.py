@@ -11,6 +11,28 @@ for name in ("iCTRL.ipa", "iCTRLUITests-Runner.ipa"):
         info_names = [n for n in names if n.startswith("Payload/") and n.count("/") == 2 and n.endswith(".app/Info.plist")]
         if len(info_names) != 1: raise SystemExit("Expected exactly one app per IPA")
         info = plistlib.loads(archive.read(info_names[0]))
+        # Validate every embedded extension, including a missing extension plist.
+        # Signing services reject missing or divergent extension version metadata.
+        extension_roots = set()
+        for member in names:
+            components = member.split("/")
+            for index, component in enumerate(components):
+                if component.endswith(".appex"):
+                    extension_roots.add("/".join(components[:index + 1]))
+        for extension in sorted(extension_roots):
+            extension_plist = extension + "/Info.plist"
+            app_parents = [extension[:index + 4] for index in range(len(extension))
+                           if extension[index:index + 5] == ".app/"]
+            if not app_parents or extension_plist not in names:
+                raise SystemExit("Embedded appex is missing its parent app or Info.plist")
+            parent_plist = app_parents[-1] + "/Info.plist"
+            if parent_plist not in names:
+                raise SystemExit("Embedded appex parent Info.plist is missing")
+            parent = plistlib.loads(archive.read(parent_plist))
+            embedded = plistlib.loads(archive.read(extension_plist))
+            for key in ("CFBundleShortVersionString", "CFBundleVersion"):
+                if not isinstance(parent.get(key), str) or not parent[key] or not isinstance(embedded.get(key), str) or embedded[key] != parent[key]:
+                    raise SystemExit("Embedded appex version/build metadata is missing or differs from parent: " + key)
     artifacts.append({"name": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                       "size_bytes": path.stat().st_size, "bundle_id": info["CFBundleIdentifier"],
                       "requires_resigning": True, "provisioning_profiles": 0})

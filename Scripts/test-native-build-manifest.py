@@ -12,8 +12,45 @@ class NativeBuildManifestTests(unittest.TestCase):
         (folder.parent / "build" / "swift-policy-tests.log").write_text("Executed 29 tests, with 0 failures (0 unexpected)\n", encoding="utf-8")
         for name, app in [("iCTRL.ipa", "iCTRL"), ("iCTRLUITests-Runner.ipa", "iCTRLUITests-Runner")]:
             with zipfile.ZipFile(folder / name, "w") as archive:
-                archive.writestr(f"Payload/{app}.app/Info.plist", plistlib.dumps({"CFBundleIdentifier": "test." + app}))
+                archive.writestr(f"Payload/{app}.app/Info.plist", plistlib.dumps({"CFBundleIdentifier": "test." + app, "CFBundleShortVersionString": "1.0.0", "CFBundleVersion": "1"}))
                 if profile: archive.writestr(f"Payload/{app}.app/embedded.mobileprovision", b"must-not-be-read")
+
+    def add_extension(self, folder, metadata, extension="iCTRLShare"):
+        with zipfile.ZipFile(folder / "iCTRL.ipa", "a") as archive:
+            root = f"Payload/iCTRL.app/PlugIns/{extension}.appex"
+            archive.writestr(root + "/binary", b"fixture")
+            if metadata is not None:
+                archive.writestr(root + "/Info.plist", plistlib.dumps(metadata))
+
+    def test_matching_embedded_extension_versions_are_accepted(self):
+        with tempfile.TemporaryDirectory(prefix="native-manifest-") as temp:
+            folder = pathlib.Path(temp) / "release"
+            folder.mkdir()
+            self.fixture(folder)
+            metadata = {"CFBundleShortVersionString": "1.0.0", "CFBundleVersion": "1"}
+            self.add_extension(folder, metadata)
+            self.add_extension(folder, metadata, extension="SecondShare")
+            self.run_manifest(folder)
+            self.assertTrue((folder / "build-manifest.json").exists())
+
+    def test_missing_or_mismatched_extension_versions_fail(self):
+        baseline = {"CFBundleShortVersionString": "1.0.0", "CFBundleVersion": "1"}
+        variants = [None, {}]
+        for key in baseline:
+            missing = dict(baseline); missing.pop(key); variants.append(missing)
+            divergent = dict(baseline); divergent[key] = "99"; variants.append(divergent)
+            empty = dict(baseline); empty[key] = ""; variants.append(empty)
+        for metadata in variants:
+            with self.subTest(metadata=metadata), tempfile.TemporaryDirectory(prefix="native-manifest-") as temp:
+                folder = pathlib.Path(temp) / "release"
+                folder.mkdir()
+                self.fixture(folder)
+                # Ensure validation checks every extension rather than only the first.
+                self.add_extension(folder, baseline, extension="FirstValid")
+                self.add_extension(folder, metadata, extension="SecondInvalid")
+                with self.assertRaisesRegex(SystemExit, "appex"):
+                    self.run_manifest(folder)
+                self.assertFalse((folder / "build-manifest.json").exists())
 
     def run_manifest(self, folder):
         outputs = ["Xcode test\n", "test-commit\n", ""]
