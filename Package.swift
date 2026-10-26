@@ -8,7 +8,7 @@ let package = Package(
     targets: [
         .target(name: "NativePolicy", path: "iCTRLKit", sources: [
             "RPCCoreTypes.swift", "ClipboardTextPolicy.swift", "ProvisioningExpiry.swift",
-            "StartupURLRequest.swift", "RenewalGate.swift", "RenewalReceiptStore.swift", "CompanionRuntimeMetadata.swift", "NativeRPCMethodDefinitions.swift",
+            "StartupURLRequest.swift", "RenewalGate.swift", "RenewalReceiptStore.swift", "CompanionRuntimeMetadata.swift", "RunnerProfileMetadata.swift", "NativeRPCMethodDefinitions.swift",
             "RPCMethod.swift", "BuildStamp.swift", "FileTransferRPCMethods.swift", "FileTransferStore.swift", "DevelopmentRPCMethods.swift"
         ]),
         .testTarget(name: "NativePolicyTests", dependencies: ["NativePolicy"], path: "NativeTests")

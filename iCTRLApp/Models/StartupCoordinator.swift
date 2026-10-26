@@ -27,6 +27,7 @@ final class StartupCoordinator: ObservableObject {
             "companion_team_identifier": ProvisioningExpiry.currentTeamIdentifier().map(JSONValue.string) ?? .null,
             "companion_profile_expires_at": expiry.map(JSONValue.string) ?? .null,
             "companion_profile_expiry_available": .bool(expiry != nil),
+            "runner_metadata_source": .string("unavailable"),
             "runner_bundle_id": .null, "runner_team_identifier": .null,
             "runner_profile_expires_at": .null, "runner_profile_expiry_verified": .bool(false),
             "sidestore_profile_expiry_available": .bool(false),
@@ -60,19 +61,64 @@ final class StartupCoordinator: ObservableObject {
         return finish(report)
     }
 
-    func status() async -> String {
-        var report = base()
-        if let schema = await schema() {
-            report["server_running"] = .bool(true)
-            report["server_version"] = (schema["server_version"] as? String).map(JSONValue.string) ?? .null
-            report["ok"] = .bool(DeveloperDiskImage.status().isMounted)
-            report["status"] = .string("running")
-        } else {
-            report["status"] = .string("stopped")
-            report["reason"] = .string(DeveloperDiskImage.status().isMounted ? "runner_stopped" : "ddi_missing")
+    /// New client reloads the existing RunnerAdmin Keychain account each time.
+    /// This never pairs, creates authorization, or trusts /schema as profile proof.
+    private func freshRunnerMetadata(requestID: String) async throws -> [String: JSONValue] {
+        let client = RunnerClient(port: 8200, account: "runner-admin")
+        guard client.isPaired else { throw RunnerClient.Failure.notPaired }
+        let result = try await client.call("runtime_status", timeout: 3, requestID: requestID)
+        let allowed = Set(["server_running", "runner_profile_expires_at", "runner_profile_expiry_available", "bundle_id", "team_identifier"])
+        let selected = result.filter { allowed.contains($0.key) }
+        let fields = try JSONDecoder().decode([String: JSONValue].self,
+            from: JSONSerialization.data(withJSONObject: selected))
+        return try RunnerProfileMetadata.parse(fields, companionBundleID: Bundle.main.bundleIdentifier,
+            companionTeam: ProvisioningExpiry.currentTeamIdentifier(), requestID: requestID)
+    }
+
+    private func metadataFailureReason(_ error: Error) -> String {
+        if let failure = error as? RunnerProfileMetadata.Failure { return failure.rawValue }
+        if (error as? URLError)?.code == .timedOut { return "runner_metadata_timeout" }
+        switch error as? RunnerClient.Failure {
+        case .notPaired: return "runner_pairing_required"
+        case .keyRejected: return "runner_pairing_rejected"
+        case .notRunning: return "runner_not_responding"
+        default: return "runner_metadata_rpc_failed"
         }
-        // Status does not bring Runner forward, so it does not claim a fresh
-        // Runner profile date. Prepare provides fresh nonce-matched metadata.
+    }
+
+    private func readyReport(schema: [String: Any], requestID: String) async -> String {
+        var report = base()
+        report["server_running"] = .bool(true)
+        report["server_version"] = (schema["server_version"] as? String).map(JSONValue.string) ?? .null
+        report["runner_callback_received"] = .bool(runnerMetadata != nil)
+        do {
+            report.merge(try await freshRunnerMetadata(requestID: requestID)) { _, fresh in fresh }
+            let mounted = DeveloperDiskImage.status().isMounted
+            let companionAvailable = report["companion_profile_expiry_available"] == .bool(true)
+            report["ok"] = .bool(mounted && companionAvailable)
+            report["status"] = .string(mounted && companionAvailable ? "running" : "needs_attention")
+            if !mounted { report["reason"] = .string("ddi_missing") }
+            else if !companionAvailable { report["reason"] = .string("companion_profile_expiry_unavailable") }
+        } catch {
+            report["status"] = .string("needs_attention")
+            let reason = metadataFailureReason(error)
+            report["reason"] = .string(reason)
+            if reason == "runner_pairing_required" || reason == "runner_pairing_rejected" {
+                report["next_action"] = .string("pair_runner_in_app")
+                report["message"] = .string("Open iCTRL Settings and explicitly pair this app with Runner; no approval request was sent.")
+            }
+            // Fixed public reasons only; never serialize RPC bodies or credentials.
+        }
+        return finish(report)
+    }
+
+    func status() async -> String {
+        if let liveSchema = await schema() {
+            return await readyReport(schema: liveSchema, requestID: UUID().uuidString)
+        }
+        var report = base()
+        report["status"] = .string("stopped")
+        report["reason"] = .string(DeveloperDiskImage.status().isMounted ? "runner_stopped" : "ddi_missing")
         return finish(report)
     }
 
@@ -125,18 +171,12 @@ final class StartupCoordinator: ObservableObject {
         var liveSchema: [String: Any]?
         while Date() < deadline {
             liveSchema = await schema()
-            if liveSchema != nil && runnerMetadata != nil { break }
+            if liveSchema != nil { break }
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
         guard let liveSchema else { return failed("runner_not_responding") }
-        var report = base()
-        report["ok"] = .bool(true)
-        report["status"] = .string("running")
-        report["server_running"] = .bool(true)
-        report["server_version"] = (liveSchema["server_version"] as? String).map(JSONValue.string) ?? .null
-        if let metadata = runnerMetadata { report.merge(metadata) { _, fresh in fresh } }
         ForegroundKeepAwake.shared.setServiceRunning(true)
-        return finish(report)
+        return await readyReport(schema: liveSchema, requestID: requestID)
     }
 
     func receive(_ url: URL) {
@@ -154,6 +194,9 @@ final class StartupCoordinator: ObservableObject {
             for key in ["runner_bundle_id", "runner_team_identifier"] {
                 if let text = value(key), text.count <= 255 { metadata[key] = .string(text) }
             }
+            metadata["runner_metadata_source"] = .string("nonce_callback_hint")
+            // Keep callback compatibility/diagnostics, but freshness now requires
+            // the authenticated loopback response for this prepare request.
             runnerMetadata = metadata
             return
         }

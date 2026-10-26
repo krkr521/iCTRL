@@ -116,11 +116,11 @@ final class RunnerClient {
     // MARK: - RPC
 
     /// One enveloped JSON-RPC call; returns its `result` object.
-    func call(_ method: String, _ params: [String: Any] = [:], timeout: TimeInterval = 15) async throws -> [String: Any] {
+    func call(_ method: String, _ params: [String: Any] = [:], timeout: TimeInterval = 15, requestID: String = UUID().uuidString) async throws -> [String: Any] {
         guard let record, let key = Data(hexString: record.key), let tok4 = Data(hexString: record.tok),
               let nonce = SecureEnvelope.randomBytes(16) else { throw Failure.notPaired }
 
-        let request: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": params, "id": 1]
+        let request: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": params, "id": requestID]
         let plaintext = try JSONSerialization.data(withJSONObject: request)
         let ts = UInt64(Date().timeIntervalSince1970)
         let kEnc = SecureEnvelope.hmac(key, Data(SecureEnvelope.labelEncRequest.utf8) + nonce)
@@ -151,10 +151,16 @@ final class RunnerClient {
         guard let reply = try JSONSerialization.jsonObject(with: decoded) as? [String: Any] else {
             throw Failure.server("Malformed response")
         }
+        guard RunnerRPCResponsePolicy.matches(reply, requestID: requestID) else {
+            throw Failure.server("RPC response request ID mismatch")
+        }
         if let error = reply["error"] as? [String: Any] {
             throw Failure.server(error["message"] as? String ?? "RPC error")
         }
-        return reply["result"] as? [String: Any] ?? [:]
+        guard let result = reply["result"] as? [String: Any] else {
+            throw Failure.server("Malformed RPC result")
+        }
+        return result
     }
 
     // MARK: - HTTP
