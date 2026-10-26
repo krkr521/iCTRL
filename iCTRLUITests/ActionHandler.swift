@@ -7730,6 +7730,9 @@ class ActionHandler {
     // MARK: - Drag
 
     private func drag(_ cmd: ActionCommand) -> ([String: JSONValue]?, JSONRPCError?) {
+        if cmd.fast == false && cmd.dragPathParams != nil {
+            return (nil, .invalidParams)
+        }
         if let params = cmd.dragPathParams {
             let (path, error) = ContinuousDragPath.parse(params, screenSize: pointSize.size)
             if let error = error { return (nil, error) }
@@ -7773,6 +7776,25 @@ class ActionHandler {
         }
         if let err = validateCoordinate(x: fromX, y: fromY, context: "drag start") { return (nil, err) }
         if let err = validateCoordinate(x: toX, y: toY, context: "drag end") { return (nil, err) }
+
+        if cmd.fast == false {
+            let hold = cmd.duration ?? 1.0
+            guard hold.isFinite, (0.1...2.0).contains(hold) else {
+                return (nil, .invalidParams)
+            }
+            guard let bundleID = resolveForegroundBundleId() else {
+                return (nil, .serverError("Cannot identify the foreground app for native drag; no gesture was sent."))
+            }
+            // Native XCTest negotiates system drag/drop; synthesized movement
+            // may scroll or lose a Shortcuts action instead of reordering it.
+            let target = XCUIApplication(bundleIdentifier: bundleID)
+            let origin = target.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: fromX, dy: fromY))
+            let end = origin.withOffset(CGVector(dx: toX, dy: toY))
+            start.press(forDuration: hold, thenDragTo: end)
+            return (["message": .string("Native endpoint drag completed"),
+                     "screen": coordinateHint], nil)
+        }
 
         let duration = cmd.duration ?? 0.5
 

@@ -327,7 +327,7 @@ struct RPCMethodRegistry {
         ),
         RPCMethodDef(
             name: "drag",
-            description: "Drag between endpoints or follow points:[{x,y},...] with one uninterrupted single-finger touch. Path mode accepts 2...64 screen points and duration 0.1...10 seconds (default 1), equally timed per segment; do not combine with endpoints/refs. Endpoints may be coordinates (from_x/from_y/to_x/to_y in POINTS) OR element refs (from_ref/to_ref, which resolve to the element center). Use for reordering/sliders; for a simple scroll flick use swipe.",
+            description: "Drag between endpoints or follow points:[{x,y},...] with one uninterrupted single-finger touch. Path mode accepts 2...64 screen points and duration 0.1...10 seconds (default 1), equally timed per segment; do not combine with endpoints/refs. Endpoints may be coordinates (from_x/from_y/to_x/to_y in POINTS) OR element refs (from_ref/to_ref, which resolve to the element center). For system drag/drop that fails with synthesis, use fast:false with endpoints; duration is then the initial hold (default 1 second, range 0.1...2). For a simple scroll flick use swipe.",
             params: [
                 RPCParamDef(name: "settle", type: "boolean", required: false, description: "Default true: after the action, wait until the screen stops changing (compares low-res frames; up to settle_timeout) and report it in `settle`. false = return right after the action."),
                 RPCParamDef(name: "settle_timeout", type: "number", required: false, description: "Max seconds to wait for the screen to settle (default 2, max 3)."),
@@ -338,6 +338,7 @@ struct RPCMethodRegistry {
                 RPCParamDef(name: "from_y", type: "number", required: false, description: "Start Y (points)"),
                 RPCParamDef(name: "to_x", type: "number", required: false, description: "End X (points)"),
                 RPCParamDef(name: "to_y", type: "number", required: false, description: "End Y (points)"),
+                RPCParamDef(name: "fast", type: "boolean", required: false, description: "Default synthesized gesture; false uses native XCTest system drag/drop with endpoints only."),
                 RPCParamDef(name: "duration", type: "number", required: false, description: "Drag duration in seconds (endpoints default 0.5; path default 1.0, range 0.1...10)"),
             ],
             returns: "{message, screen}"
