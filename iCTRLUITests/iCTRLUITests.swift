@@ -1349,6 +1349,9 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 // including errors; timing and method name are sufficient.
                 var values = params ?? [:]
                 values.removeValue(forKey: JSONRPCServer.peerSourceParam)
+                // The owner-bound session was checked above and remains in the
+                // authorize closure. It is transport metadata, not clipboard input.
+                values.removeValue(forKey: "automation_session")
                 let start = ProcessInfo.processInfo.systemUptime
                 self.nativeClipboard.handle(method: method, params: values, authorize: { [weak srv] in
                     guard let srv else { return .internalError }
