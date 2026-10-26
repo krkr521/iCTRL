@@ -59,9 +59,18 @@ on unattended renewal.
 ## Build
 
 Run `bash Scripts/build-unsigned.sh` on macOS with Xcode 16.4 and XcodeGen. The
-script runs Foundation policy tests, verifies the downloaded IDevice dependency,
+script runs Foundation policy and continuous drag tests, verifies the downloaded IDevice dependency,
 and builds two artifacts without an Apple account. The IPAs require signing on
 the user's device or with the user's own development setup. Build outputs and
 local signing configuration are excluded from Git.
 
 The upstream Apache-2.0 license and notices remain in place.
+
+## Upstream integration
+
+Version `1.98.13-krkr.native3` merges upstream main at `874f528` and
+[PR #6](https://github.com/OpenMinis/iCTRL/pull/6), adding continuous single-finger
+drag paths. It retains the native clipboard and renewal actions. The path tests
+use the fork's split core types, and long paths retain post-action settling
+within their extended watchdog budget. Device validation of this integration is
+reported separately from compilation and policy tests.

@@ -327,17 +327,18 @@ struct RPCMethodRegistry {
         ),
         RPCMethodDef(
             name: "drag",
-            description: "Drag between two points. Endpoints may be coordinates (from_x/from_y/to_x/to_y in POINTS) OR element refs (from_ref/to_ref, which resolve to the element center). Use for reordering/sliders; for a simple scroll flick use swipe.",
+            description: "Drag between endpoints or follow points:[{x,y},...] with one uninterrupted single-finger touch. Path mode accepts 2...64 screen points and duration 0.1...10 seconds (default 1), equally timed per segment; do not combine with endpoints/refs. Endpoints may be coordinates (from_x/from_y/to_x/to_y in POINTS) OR element refs (from_ref/to_ref, which resolve to the element center). Use for reordering/sliders; for a simple scroll flick use swipe.",
             params: [
                 RPCParamDef(name: "settle", type: "boolean", required: false, description: "Default true: after the action, wait until the screen stops changing (compares low-res frames; up to settle_timeout) and report it in `settle`. false = return right after the action."),
                 RPCParamDef(name: "settle_timeout", type: "number", required: false, description: "Max seconds to wait for the screen to settle (default 2, max 3)."),
+                RPCParamDef(name: "points", type: "array", required: false, description: "Continuous single-finger path: 2...64 {x,y} objects in POINTS, one press and one lift; mutually exclusive with endpoints/refs."),
                 RPCParamDef(name: "from_ref", type: "string", required: false, description: "Start element ref (alternative to from_x/from_y)"),
                 RPCParamDef(name: "to_ref", type: "string", required: false, description: "End element ref (alternative to to_x/to_y)"),
                 RPCParamDef(name: "from_x", type: "number", required: false, description: "Start X (points)"),
                 RPCParamDef(name: "from_y", type: "number", required: false, description: "Start Y (points)"),
                 RPCParamDef(name: "to_x", type: "number", required: false, description: "End X (points)"),
                 RPCParamDef(name: "to_y", type: "number", required: false, description: "End Y (points)"),
-                RPCParamDef(name: "duration", type: "number", required: false, description: "Drag duration in seconds (default: 0.5)"),
+                RPCParamDef(name: "duration", type: "number", required: false, description: "Drag duration in seconds (endpoints default 0.5; path default 1.0, range 0.1...10)"),
             ],
             returns: "{message, screen}"
         ),
@@ -376,7 +377,7 @@ struct RPCMethodRegistry {
     /// release that added the encrypted auth channel plus the docs/Skill,
     /// clear-text, page-source, and reliability improvements. Single source of
     /// truth for /schema AND device_info.
-    static let serverVersion = "1.98.12-krkr.native2"
+    static let serverVersion = "1.98.13-krkr.native3"
 
     /// When this binary was built, as "YYYY-MM-DD HH:MM".
     ///
@@ -440,7 +441,7 @@ struct RPCMethodRegistry {
                 "rpc": "POST /rpc   an ENCRYPTED v1 envelope (no plaintext path, no Bearer header): {v:1, tok, ts, nonce:<32 hex>, ct:<b64>, tag:<64 hex>} wrapping the JSON-RPC body. See guidance.authorization for the construction.",
                 "stream": "GET /stream[.ts]?ticket=<t>  live H.264 screen video (default 5 fps, ?fps=N in 0.5-30 to change). Screen capture is the limit, not encoding: where XCTest can capture straight to JPEG the full 30 is reachable on a cool device and somewhat less on a hot one; where it can't, capture caps the rate near 7. A byte pipe can't carry a per-request envelope, so it takes a SINGLE-USE ~60s ticket minted over the encrypted channel by the `stream_ticket` RPC. One shared encoder fans out to all clients; encoding stops when the last client disconnects.",
                 "remote": "GET /remote  browser control page (shadcn-styled): plays the stream via MSE and drives the device with tap/swipe/scroll/keyboard + a side panel of buttons. Paste the 64-hex pairing key once; the page does the v1 crypto in-browser (WebCrypto) and keeps K in localStorage — it is never sent.",
-                "whoami": "GET /whoami   unauthenticated {device_id, name, protocol_version, server_version}. device_id is stable per installation: store one key per device under it and use that key over every channel (USB, LAN, nearby). Every response also carries it as the X-ICTRL-Device header",
+                "whoami": "GET /whoami   unauthenticated {device_id, protocol_version, server_version}. device_id is stable per installation: store one key per device under it and use that key over every channel (USB, LAN, nearby). Every response also carries it as the X-ICTRL-Device header",
                 "logs": "GET /logs?ticket=<t>   plain-text recent logs (current process, in-memory). Browser-issued GET, so it uses the same single-use ticket as /stream. Sensitive values are redacted",
                 "logs_files": "GET /logs/files?ticket=<t>   list persisted daily log files (survive crashes/restarts)",
                 "logs_history": "GET /logs/history?date=YYYY-MM-DD&ticket=<t>   dump a persisted day's log (redacted). Use this to recover logs from BEFORE a crash — /logs only holds the current process's memory",

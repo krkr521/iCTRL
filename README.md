@@ -412,10 +412,14 @@ four steps on that screen:
 
 1. **Start LocalDevVPN.** Tap *Open LocalDevVPN & connect*. The app sends you
    there and brings you back.
-2. **Import a pairing file.** Use the one iLoader produces, or create one on a
-   Mac with `idevicepair pair` (libimobiledevice) and send it over AirDrop,
-   Files or iCloud. If the picker can't reach the file, share it to iCTRL from
-   the app that has it; iCTRL confirms once it is stored.
+2. **Import a RemotePairing file.** StikDebug's `pairingFile.plist` works as
+   is. iLoader, or [idevice_pair](https://github.com/jkcoxson/idevice_pair) on
+   a computer (choose *Remote pairing*), can also create one. Send it over
+   AirDrop, Files or iCloud. If the picker can't reach the file, share it to
+   iCTRL from the app that has it; iCTRL confirms once it is stored. A
+   lockdown pairing file (from `idevicepair pair`, or SideStore's
+   `ALTPairingFile.mobiledevicepairing`) is refused: it cannot open the
+   tunnel the mount uses.
 3. **Download image files.** About 100 MB, downloaded once and reused.
 4. **Mount Developer Disk Image.**
 
@@ -464,8 +468,12 @@ to get its menu:
 - **Remote access is off by default.** The server only answers on the device
   itself (`127.0.0.1`), e.g. an agent running in an on-device sandbox. To drive
   the phone from another machine, choose **🌐 Enable Remote Access** first.
-- **Allow** and the remote-access switch only work while the phone is
-  unlocked. iOS asks for Face ID / the passcode if it isn't.
+- **Every action except Deny needs the phone unlocked** (Allow, the
+  remote-access and nearby switches, Stop Server, Copy Logs). iOS asks for
+  Face ID / the passcode if it isn't. Copied logs are redacted.
+- Any app can open `ictrl://stop`, so it doesn't stop the server by itself: it
+  posts a **Stop iCTRL?** notification to confirm on the phone. The iCTRL app,
+  once paired with the runner, stops it over the encrypted channel instead.
 - To start again after **Stop Server**, open the runner (or tap **Start
   Server** in the iCTRL app) again.
 - The iCTRL app shows the same switch as a **Visibility** menu.
@@ -572,6 +580,32 @@ All methods are JSON-RPC 2.0 (`POST /rpc`). Highlights:
 | **Device** | `device_info`, `home`, `lock`, `unlock`, `is_locked`, `wait` |
 | **Server** | `config` (remote access, `nearby_discovery`, `device_name`, sessions and revocation, `stop_server`), `reset`, `stream_ticket` |
 
+### Continuous single-finger paths
+
+`drag` accepts an optional `points` array to follow a polyline without lifting
+between waypoints. This supports drawing and dragging around corners. It is a
+single finger, not simultaneous multi-touch. Existing endpoint/ref calls are
+unchanged.
+
+```json
+{"method":"drag","params":{"points":[{"x":50,"y":200},{"x":150,"y":200},{"x":150,"y":300}],"duration":1.2}}
+```
+
+Coordinates are screen **points**, not screenshot pixels. Supply 2–64 finite,
+nonnegative, on-screen `{x,y}` points. Do not combine `points` with
+`from_x/from_y/to_x/to_y` or `from_ref/to_ref`. Total `duration` is 0.1–10 seconds
+(default 1), divided equally between segments; repeating a waypoint holds the
+finger there for that segment. All waypoints are validated before any touch is
+injected. The finger presses once at the first point and lifts once after the
+last point. The normal challenge check uses the actual path start, and long
+paths receive enough RPC time for the gesture and settle check to finish.
+
+Run the validation/timing tests on a Mac with the Swift toolchain:
+
+```sh
+./Scripts/test-continuous-drag.sh
+```
+
 Notable behaviour:
 
 - **`page_source{visible_only, max_children}`** — on a recycling list (chat
@@ -588,7 +622,7 @@ Notable behaviour:
 
 `GET /`, `GET /remote` (browser control page), `GET /stream` (live H.264),
 `GET /logs`, and `GET /logs/history?date=` expose docs, a UI and redacted logs.
-`GET /whoami` (unauthenticated) returns the device id, name and versions, and
+`GET /whoami` (unauthenticated, same-origin only) returns the device id and versions, and
 every response carries the id in an `X-ICTRL-Device` header, so clients can keep
 one key per device.
 
