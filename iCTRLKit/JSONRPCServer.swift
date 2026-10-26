@@ -50,6 +50,12 @@ class JSONRPCServer {
     func quietMayLaunch(_ launch: QuietControl.Launch) -> Bool {
         quietControl.mayLaunch(launch, now: ProcessInfo.processInfo.systemUptime)
     }
+    @discardableResult func quietAbortBeforeLaunch(_ launch: QuietControl.Launch, diagnostic: String) -> Bool {
+        quietControl.abortBeforeLaunch(launch, diagnostic: diagnostic, now: ProcessInfo.processInfo.systemUptime)
+    }
+    func quietMarkLaunchAttempted(_ launch: QuietControl.Launch) -> Bool {
+        quietControl.markLaunchAttempted(launch, now: ProcessInfo.processInfo.systemUptime)
+    }
     var onStateChange: ((Bool) -> Void)?
     /// Hand off an authorized connection to the video streamer (host owns the
     /// frame grabber + VideoStreamer). The server stops managing this connection

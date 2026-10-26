@@ -17,6 +17,8 @@ final class QuietControl {
     private var pendingAction: String?
     private var contextDiagnostic: String?
     private var restoringUntil: TimeInterval?
+    private var launchAttempted = false
+    private var beginLaunchNonce: String?
     private(set) var enabled: Bool
     let port: UInt16
 
@@ -161,7 +163,7 @@ final class QuietControl {
         var value = try QuietLease(ownerTokId: owner, id: id, ttl: TimeInterval(ttl), now: now)
         try value.prepareCallback(nonce: nonce, action: "begin", expectedDeadline: deadline, now: now)
         let url = try shortcutURL(name: "iCTRL Quiet Begin", action: "begin", nonce: nonce, deadline: deadline)
-        lease = value; wallDeadline = deadline; pendingUntil = now + 30; pendingAction = "begin"; restoringUntil = nil; contextDiagnostic = nil
+        lease = value; wallDeadline = deadline; pendingUntil = now + 30; pendingAction = "begin"; restoringUntil = nil; contextDiagnostic = nil; launchAttempted = false; beginLaunchNonce = nonce
         return Launch(url: url, leaseID: id, deadline: deadline, nonce: nonce, action: "begin")
     }
 
@@ -274,6 +276,27 @@ final class QuietControl {
         value.markRestorationPending()
         lease = value; pendingAction = nil; pendingUntil = nil; restoringUntil = nil
         contextDiagnostic = diagnostic
+    }
+
+    /// Only a Begin proved never sent to Shortcuts can release manual UI here.
+    /// An End/Inspect may follow an earlier Begin, so it must stay blocked.
+    @discardableResult func abortBeforeLaunch(_ launch: Launch, diagnostic: String, now: TimeInterval) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard now.isFinite, launch.action == "begin", !launchAttempted, beginLaunchNonce == launch.nonce,
+              var value = lease, value.id == launch.leaseID,
+              value.state == .preparing || value.state == .failed || value.state == .expired else { return false }
+        value.endWithoutLaunchingBegin()
+        lease = value; pendingAction = nil; pendingUntil = nil; restoringUntil = nil
+        contextDiagnostic = diagnostic
+        return true
+    }
+
+    @discardableResult func markLaunchAttempted(_ launch: Launch, now: TimeInterval) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard lease?.id == launch.leaseID,
+              lease?.hasPendingCallback(nonce: launch.nonce, now: now) == true else { return false }
+        launchAttempted = true
+        return true
     }
 
     func mayLaunch(_ launch: Launch, now: TimeInterval) -> Bool {

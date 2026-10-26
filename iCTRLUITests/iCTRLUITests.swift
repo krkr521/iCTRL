@@ -1241,7 +1241,11 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
             // Capture immediately before leaving the foreground, on the serial UI
             // lane. Shortcuts' HTTP callback never waits for this queue.
             self.rpcQueue.async {
-                guard self.server === srv, srv.quietMayLaunch(launch) else { return }
+                guard self.server === srv else { return }
+                guard srv.quietMayLaunch(launch) else {
+                    _ = srv.quietAbortBeforeLaunch(launch, diagnostic: "helper_not_launched_before_deadline")
+                    return
+                }
                 let captured: String? = DispatchQueue.main.sync {
                     if UIApplication.shared.applicationState == .active { return Bundle.main.bundleIdentifier }
                     return self.actionHandler?.quietForegroundBundleID()
@@ -1258,11 +1262,16 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                     target = captured == "com.apple.shortcuts" ? self.quietBeginContext[launch.leaseID] : captured
                 }
                 guard let target, !target.isEmpty, target != "com.apple.shortcuts" else {
-                    srv.quietFailLaunch(launch, diagnostic: "foreground_before_helper_unknown")
+                    if !srv.quietAbortBeforeLaunch(launch, diagnostic: "foreground_before_helper_unknown") {
+                        srv.quietFailLaunch(launch, diagnostic: "foreground_before_helper_unknown")
+                    }
                     Self.logBuffer.append("Quiet helper not launched: original foreground unavailable")
                     return
                 }
-                guard srv.quietMayLaunch(launch) else { return }
+                guard srv.quietMarkLaunchAttempted(launch) else {
+                    _ = srv.quietAbortBeforeLaunch(launch, diagnostic: "helper_not_launched_before_deadline")
+                    return
+                }
                 self.quietRestoreContext = [launch.nonce: target]
                 var opened = false
                 let exception = DispatchQueue.main.sync {

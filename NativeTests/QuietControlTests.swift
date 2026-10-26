@@ -160,6 +160,38 @@ final class QuietControlTests: XCTestCase {
         XCTAssertNotNil(control.gate(owner: "web", method: "tap", session: nil, now: 110))
     }
 
+    func testKnownNoLaunchReleasesManualWithoutVerifyingBegin() throws {
+        let control = QuietControl(enabled: true, port: 8200)
+        try control.register(owner: "agent", mode: "automation", now: 100)
+        try control.register(owner: "web", mode: "manual", now: 100)
+        let begin = try control.begin(owner: "agent", ttl: 60, now: 100, date: Date(timeIntervalSince1970: 1_800_000_000))
+        XCTAssertTrue(control.abortBeforeLaunch(begin, diagnostic: "foreground_before_helper_unknown", now: 101))
+        XCTAssertEqual(control.status(owner: "agent", requestedID: begin.leaseID, now: 101)["state"], "ended")
+        XCTAssertEqual(control.status(owner: "agent", requestedID: begin.leaseID, now: 101)["context_diagnostic"], "foreground_before_helper_unknown")
+        XCTAssertEqual(control.takeoverState(now: 101), "manual_ready")
+        XCTAssertNil(control.gate(owner: "web", method: "tap", session: nil, now: 101))
+        XCTAssertNotNil(control.gate(owner: "agent", method: "tap", session: begin.leaseID, now: 101))
+        XCTAssertFalse(control.callback(try callback(from: begin, action: "begin", focus: "iCTRL Automation"), now: 102))
+        XCTAssertFalse(control.abortBeforeLaunch(begin, diagnostic: "again", now: 103))
+        let late = try control.begin(owner: "agent", ttl: 1, now: 104, date: Date(timeIntervalSince1970: 1_800_000_100))
+        XCTAssertFalse(control.mayLaunch(late, now: 106))
+        XCTAssertTrue(control.abortBeforeLaunch(late, diagnostic: "helper_not_launched_before_deadline", now: 106))
+        XCTAssertEqual(control.takeoverState(now: 106), "manual_ready")
+    }
+
+    func testAttemptedLaunchCannotUseSafeNoLaunchExit() throws {
+        let control = QuietControl(enabled: true, port: 8200)
+        try control.register(owner: "agent", mode: "automation", now: 100)
+        try control.register(owner: "web", mode: "manual", now: 100)
+        let begin = try control.begin(owner: "agent", ttl: 60, now: 100, date: Date(timeIntervalSince1970: 1_800_000_000))
+        XCTAssertTrue(control.markLaunchAttempted(begin, now: 101))
+        XCTAssertFalse(control.abortBeforeLaunch(begin, diagnostic: "no_launch", now: 102))
+        control.failLaunch(begin, diagnostic: "shortcut_launch_failed", now: 102)
+        XCTAssertEqual(control.takeoverState(now: 102), "restoration_pending")
+        XCTAssertNotNil(control.gate(owner: "web", method: "tap", session: nil, now: 102))
+        XCTAssertFalse(control.callback(try callback(from: begin, action: "begin", focus: "iCTRL Automation"), now: 103))
+    }
+
     func testModePersistsAndCannotDowngradeOnRestart() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

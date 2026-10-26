@@ -102,6 +102,10 @@ public struct QuietLease {
     public mutating func suspend() { state = .suspended; pending = nil; restoring = nil }
     public mutating func noteBeginUncertain() { beginUncertain = true }
     public mutating func markRestorationPending() { state = .restorationPending; pending = nil; restoring = nil }
+    public mutating func endWithoutLaunchingBegin() {
+        guard state == .preparing || state == .failed || state == .expired else { return }
+        state = .ended; pending = nil; restoring = nil
+    }
     public var hasPendingCallback: Bool { pending != nil }
     public func hasPendingCallback(nonce: String, now: TimeInterval) -> Bool {
         guard let pending, pending.nonce == nonce, now.isFinite, now < pending.expiry else { return false }
