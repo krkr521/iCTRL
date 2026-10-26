@@ -1,0 +1,28 @@
+name: Native unsigned iCTRL
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 16.4
+        run: |
+          test -d /Applications/Xcode_16.4.app
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+      - name: Install XcodeGen
+        run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+      - name: Build and package (no Apple account)
+        run: bash Scripts/build-unsigned.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iCTRL-native-unsigned
+          path: |
+            release/iCTRL.ipa
+            release/iCTRLUITests-Runner.ipa
+            release/build-manifest.json
+          retention-days: 1
+          if-no-files-found: error
