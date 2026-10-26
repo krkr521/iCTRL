@@ -47,7 +47,7 @@ class AppState: ObservableObject {
             }
         }
 
-        s.onRPCRequest = { method, params, completion in
+        s.onRPCRequest = { method, params, _, completion in
             completion(nil, .serverError("RPC not available in app mode. Use the UITest runner for automation."))
         }
 
