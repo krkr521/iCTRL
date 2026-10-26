@@ -95,6 +95,19 @@ struct SettingsView: View {
 
             serverSection
             Section {
+                Toggle("自动操控时抑制通知（需专用捷径）", isOn: Binding(
+                    get: { runnerAdmin.quietEnabled ?? false },
+                    set: { value in Task { await runnerAdmin.setQuiet(value) } }
+                ))
+                .disabled(runnerAdmin.quietEnabled == nil || runnerAdmin.changingQuiet)
+                if runnerAdmin.changingQuiet { ProgressView("Saving Runner setting…") }
+                if let notice = runnerAdmin.quietNotice {
+                    Text(notice).foregroundColor(.orange).font(.footnote)
+                }
+            } footer: {
+                Text("Default off. Configure and verify the iCTRL Automation Focus plus both Quiet Shortcuts first. The switch only enables the lease gate; automation waits for a matching Focus callback before any UI input. Manual web control uses its own paired token and never starts Focus.")
+            }
+            Section {
                 Toggle("Keep awake while iCTRL is foreground", isOn: $keepAwakeWhileServing)
                 Button("Prepare iCTRL (check DDI and start)") {
                     Task { _ = await StartupCoordinator.shared.prepare(keepAwake: keepAwakeWhileServing); await runner.check() }
@@ -146,9 +159,13 @@ struct SettingsView: View {
             ForegroundKeepAwake.shared.install()
             ForegroundKeepAwake.shared.setEnabled(keepAwakeWhileServing)
             runner.startPolling()
+            Task { await runnerAdmin.loadQuiet() }
         }
         .onDisappear { runner.stopPolling() }
-        .onChange(of: runner.isRunning) { ForegroundKeepAwake.shared.setServiceRunning($0) }
+        .onChange(of: runner.isRunning) {
+            ForegroundKeepAwake.shared.setServiceRunning($0)
+            Task { await runnerAdmin.loadQuiet() }
+        }
         .onChange(of: keepAwakeWhileServing) { ForegroundKeepAwake.shared.setEnabled($0) }
         .onOpenURL { url in
             StartupCoordinator.shared.receive(url)

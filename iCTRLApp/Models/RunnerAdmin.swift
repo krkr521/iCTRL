@@ -44,6 +44,9 @@ final class RunnerAdmin: ObservableObject {
     @Published private(set) var clientsLoaded = false
     @Published private(set) var logLines: [String] = []
     @Published private(set) var logsLoaded = false
+    @Published private(set) var quietEnabled: Bool?
+    @Published private(set) var changingQuiet = false
+    @Published private(set) var quietNotice: String?
 
     private let client: RunnerClient
     /// The runner keeps 500 lines at most per `logs` call.
@@ -69,8 +72,56 @@ final class RunnerAdmin: ObservableObject {
             isPaired = true
             ictrlLog("Runner admin: paired as \(client.sessionID ?? "?")")
             await loadClients()
+            await loadQuiet()
         } catch {
             handle(error)
+        }
+    }
+
+    /// Runner-owned setting, read through this app's already paired local token.
+    func loadQuiet() async {
+        guard client.isPaired else {
+            quietEnabled = nil
+            quietNotice = "Connect this app to Runner before changing notification isolation."
+            return
+        }
+        do {
+            let reply = try await client.call("automation_config")
+            guard reply["storage_state"] as? String == "ready", let enabled = reply["enabled"] as? Bool else {
+                quietEnabled = nil
+                quietNotice = "Runner quiet settings are unavailable; automatic control remains blocked."
+                return
+            }
+            quietEnabled = enabled
+            quietNotice = nil
+        } catch {
+            quietEnabled = nil
+            quietNotice = "Could not read Runner quiet setting: \(error.localizedDescription)"
+        }
+    }
+
+    func setQuiet(_ enabled: Bool) async {
+        guard !changingQuiet, client.isPaired else {
+            quietNotice = "Connect this app to Runner before changing notification isolation."
+            return
+        }
+        changingQuiet = true
+        defer { changingQuiet = false }
+        do {
+            _ = try await client.call("automation_config", ["enabled": enabled])
+            let confirmed = try await client.call("automation_config")
+            guard confirmed["storage_state"] as? String == "ready",
+                  confirmed["enabled"] as? Bool == enabled else {
+                quietNotice = "Runner did not confirm the setting; automatic control remains unavailable."
+                quietEnabled = nil
+                return
+            }
+            quietEnabled = enabled
+            quietNotice = nil
+        } catch {
+            let message = "Could not save Runner quiet setting: \(error.localizedDescription)"
+            await loadQuiet()
+            quietNotice = message
         }
     }
 

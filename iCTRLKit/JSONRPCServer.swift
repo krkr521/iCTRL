@@ -418,9 +418,11 @@ class JSONRPCServer {
                     return fields[1].trimmingCharacters(in: .whitespaces)
                 }
                 let transferEncoded = text.components(separatedBy: "\r\n").contains { $0.lowercased().hasPrefix("transfer-encoding:") }
+                let quietCallback = text.hasPrefix("POST /quiet-callback ")
                 if header.upperBound > 16 * 1024 || lengths.count > 1 || transferEncoded ||
                     lengths.contains(where: { Int($0) == nil || (Int($0) ?? -1) < 0 || (Int($0) ?? 0) > 512 * 1024 }) ||
-                    acc.count - header.upperBound > 512 * 1024 {
+                    acc.count - header.upperBound > 512 * 1024 ||
+                    (quietCallback && (header.upperBound > 4096 || lengths.count != 1 || (Int(lengths[0]) ?? 1025) > 1024)) {
                     self.sendHTTPResponse(connection: connection, status: 413, body: "Request too large or unsupported framing")
                     return
                 }
@@ -1201,7 +1203,13 @@ class JSONRPCServer {
                 let registered = try quietControl.register(owner: owner, mode: mode, now: now)
                 return result(["mode": .string(registered), "quiet_available": .bool(quietControl.isAvailable)])
             case "automation_owner_status":
-                return result(statusValues())
+                var values = statusValues()
+                if quietControl.mode(owner: owner) == "manual" {
+                    let takeover = quietControl.takeoverState(now: now)
+                    values["takeover_state"] = .string(takeover)
+                    values["ui_blocked"] = .bool(takeover != "manual_ready")
+                }
+                return result(values)
             case "automation_status":
                 guard let id = params["lease_id"]?.stringValue else { return error("lease_id required") }
                 let values = statusValues(id)
