@@ -19,7 +19,9 @@ class PosixTaskFlow(unittest.TestCase):
         events = []
         class Session:
             cleanup_error = None
-            def __init__(self, raw, **kwargs): self.local_deadline = time.monotonic() + 300
+            def __init__(self, raw, **kwargs):
+                self.local_deadline = time.monotonic() + kwargs["ttl_seconds"]
+                events.append(("ttl", kwargs["ttl_seconds"], self.local_deadline))
             def __enter__(self): events.append("begin"); return self
             def __exit__(self, *args): events.append("end")
             def call(self, method, params): events.append(method); return {"ok": True}
@@ -34,9 +36,10 @@ class PosixTaskFlow(unittest.TestCase):
             directory = base / task_id; directory.mkdir(mode=0o700)
             task.atomic(base / "active", task_id)
             task.atomic(directory / "state", {"phase": "starting", "pid": os.getpid(),
-                                               "store_key": "device:synthetic", "client_path": None})
+                                               "store_key": "device:synthetic", "client_path": None,
+                                               "ttl_seconds":240, "start_hash":task.start_hash(task_id,"device:synthetic",None,240)})
             worker = threading.Thread(target=task.worker, args=(base, task_id, "device:synthetic"),
-                                      kwargs={"loader": lambda *a, **k: (None, True),
+                                      kwargs={"ttl_seconds":240, "loader": lambda *a, **k: (None, True),
                                               "session_cls": Session, "manager_cls": lambda *a: None,
                                               "managed": managed}, daemon=True)
             worker.start()
@@ -44,6 +47,8 @@ class PosixTaskFlow(unittest.TestCase):
             while task.public_status(directory)["status"] != "running" and time.monotonic() < limit:
                 time.sleep(.01)
             self.assertEqual(task.public_status(directory)["status"], "running")
+            self.assertEqual(task.public_status(directory)["ttl_seconds"], 240)
+            self.assertEqual(task.read(directory / "state")["body_deadline"], events[0][2] - 75)
             methods = ["device_info", "launch_app", "find_element", "tap",
                        "find_element", "tap", "find_element"]
             try:
@@ -62,9 +67,33 @@ class PosixTaskFlow(unittest.TestCase):
                 with task.locked(base): task.atomic(directory / "stop", {"stop_requested": True})
                 worker.join(timeout=5)
             self.assertFalse(worker.is_alive())
-            self.assertEqual(events, ["begin", "autolock_start", *methods, "autolock_restore", "end"])
+            self.assertEqual(events[0][:2], ("ttl", 240))
+            self.assertEqual(events[1:], ["begin", "autolock_start", *methods, "autolock_restore", "end"])
             self.assertEqual(task.public_status(directory)["status"], "complete")
             self.assertEqual((directory / "state").stat().st_mode & 0o777, 0o600)
+
+    def test_legacy_worker_without_ttl_uses_300(self):
+        events=[]
+        class Session:
+            cleanup_error=None
+            def __init__(self,raw,**kwargs):
+                events.append(kwargs["ttl_seconds"]); self.local_deadline=time.monotonic()+kwargs["ttl_seconds"]
+            def __enter__(self): return self
+            def __exit__(self,*args): pass
+        @contextlib.contextmanager
+        def managed(*args):
+            class State: restore_status="restored"
+            yield State()
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp); task_id="a"*32; directory=base/task_id;directory.mkdir()
+            task.atomic(base/"active",task_id)
+            task.atomic(directory/"state",{"phase":"starting","pid":os.getpid(),"store_key":"device:synthetic","client_path":None})
+            worker=threading.Thread(target=task.worker,args=(base,task_id,"device:synthetic"),kwargs={"loader":lambda *a,**k:(None,True),"session_cls":Session,"manager_cls":lambda *a:None,"managed":managed},daemon=True)
+            worker.start(); limit=time.monotonic()+5
+            while task.public_status(directory)["status"] != "running" and time.monotonic()<limit: time.sleep(.01)
+            self.assertEqual(task.public_status(directory)["ttl_seconds"],300)
+            with task.locked(base): task.atomic(directory/"stop",{"stop_requested":True})
+            worker.join(5); self.assertFalse(worker.is_alive()); self.assertEqual(events,[300])
 
     def test_waiting_timeout_removes_unclaimed_command(self):
         with tempfile.TemporaryDirectory() as temp:

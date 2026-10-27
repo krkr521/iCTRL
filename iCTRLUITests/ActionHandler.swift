@@ -181,17 +181,38 @@ class ActionHandler {
         return bid
     }
 
-    /// Quiet captures must prove the named app owns the actual front PID.
-    /// Normal RPCs retain their existing resolver behavior; a transitional
-    /// app-state/cache guess must not become a durable Quiet restore target.
-    func quietForegroundBundleID() -> String? {
-        let rememberedPIDs = frontByPID
-        defer { frontByPID = rememberedPIDs } // Never learn PID names during a Quiet transition.
-        guard let candidate = resolveForegroundBundleIdUncached() else { return nil }
-        let expected = ForegroundApp.processID(forBundleID: candidate)
-        let actual = ForegroundApp.frontmostPID()
-        guard expected > 0, actual == expected else { return nil }
-        return candidate
+    /// Quiet does not trust the normal resolver's first cached/app-state answer.
+    /// A remembered name is only a candidate: a fresh named PID must match the
+    /// front PID both before and after the read. Never learn a mapping here.
+    func quietForegroundSample(mayRead: () -> Bool) -> QuietForegroundCapture.Sample? {
+        guard mayRead() else { return nil }
+        let before = ForegroundApp.frontmostPID()
+        guard mayRead(), before > 0 else { return nil }
+
+        var candidates: [String] = []
+        if let ownBundle = Bundle.main.bundleIdentifier { candidates.append(ownBundle) }
+        if let remembered = frontByPID[before] { candidates.append(remembered) }
+        candidates += recentApps
+        candidates += AppMemory.shared.openedApps().compactMap { $0["bundle_id"] as? String }
+        candidates.append("com.apple.springboard")
+        candidates += Self.commonSystemApps
+        candidates += Self.builtInApps.compactMap { $0["bundle_id"] }
+
+        if let sample = QuietForegroundCapture.readSample(candidates: candidates, frontmostBefore: before,
+            namedPID: { ForegroundApp.processID(forBundleID: $0) },
+            frontmostPID: { ForegroundApp.frontmostPID() }, mayRead: mayRead) { return sample }
+
+        // On newer XCTest direct naming can be slow and consistently nil.
+        // It must not delay an already provable known app. Only fall back while
+        // the same foreground and read budget still hold; direct is still a hint.
+        guard mayRead() else { return nil }
+        let beforeDirect = ForegroundApp.frontmostPID()
+        guard mayRead(), beforeDirect == before else { return nil }
+        let direct = ForegroundApp.currentBundleID()
+        guard mayRead(), let direct else { return nil }
+        return QuietForegroundCapture.readSample(candidates: [direct], frontmostBefore: beforeDirect,
+            namedPID: { ForegroundApp.processID(forBundleID: $0) },
+            frontmostPID: { ForegroundApp.frontmostPID() }, mayRead: mayRead)
     }
 
     /// Home restoration follows the verified Home RPC path, including its fallback.

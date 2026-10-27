@@ -69,6 +69,32 @@ safe formatting, unchanged lease boundaries, owner isolation, and preservation
 of Begin failures through End. The iOS UI queue, real HTTP framing, clipboard
 permission prompts, and installed Shortcuts still require device acceptance.
 
+## Bounded foreground capture before a helper
+
+Before the single helper launch, Quiet reads the foreground on the serial UI
+lane for up to two seconds, polling at least 100 ms apart. A candidate bundle
+name (including the Runner itself, direct XCTest naming, and remembered apps)
+is accepted only when its freshly queried PID equals the nonzero foreground
+PID both before and after that query. Candidates are deduplicated; an incorrect
+remembered candidate does not prevent checking other candidates. No PID/name
+mapping or normal RPC resolver behavior is changed by this capture.
+
+Two consecutive samples must agree on both bundle and PID. Unknown or changed
+samples reset stability. Server identity, the existing lease/nonce launch gate,
+and the capture budget are checked around each main-queue read and before the
+one helper open. If a final check fails after launch was marked attempted, the
+existing conservative failure path applies; it cannot release the lease as a
+proved unsent Begin. Callback admission, Focus evidence, the original restore
+PID confirmation, and End idempotency are unchanged.
+
+The budget prevents starting another read or launch after it expires. A
+synchronous private XCTest call already in progress cannot be interrupted; a
+late result cannot authorize a launch. Missing candidate names or consistently
+unavailable/inconsistent PID APIs still fail closed. Source/policy tests cannot
+prove that a particular device transition is transient or that a real app has
+been restored. `QuietForegroundCaptureTests` covers candidate mismatch,
+read-gate cancellation, stability, and the existing lease boundaries.
+
 ## Limits requiring device acceptance
 
 Confirm on this iOS build that Shortcuts exposes Get Current Focus and Set Focus Until Date, can receive the URL text while locked/backgrounded, and can POST to the Runner's loopback port. Confirm real message-banner behavior while the target app is visible and on manual takeover. Opening a Shortcut URL or obtaining HTTP 204 alone is insufficient. If Begin was still running or its callback was lost, an early End `off` report does not prove that Begin cannot turn Focus on later. The server retains `restoration_pending` and blocks manual UI until the deadline plus safety margin and a fresh inspection reports off or preserved user Focus. Same-name off/on (ABA) by the user remains unobservable. Physical touch pause is not implemented.

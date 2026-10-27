@@ -33,7 +33,7 @@ python3 -B "$HOME/.ictrl/runtime/quiet_batch.py" /path/read.json --store-key 'de
 2. 用已有 `device:<id>` 开始：
 
 ```sh
-python3 -B "$HOME/.ictrl/runtime/task_session.py" start --task-id TASK_ID --store-key 'device:<已有设备标识>'
+python3 -B "$HOME/.ictrl/runtime/task_session.py" start --task-id TASK_ID --store-key 'device:<已有设备标识>' --ttl-seconds 240
 python3 -B "$HOME/.ictrl/runtime/task_session.py" status --task-id TASK_ID
 ```
 
@@ -60,7 +60,7 @@ python3 -B "$HOME/.ictrl/runtime/task_session.py" status --task-id TASK_ID
 
 ## 时间、恢复与能力边界
 
-Native 整个 lease 最长 300 秒，从 Begin 开始计时。worker 提前保留 75 秒恢复时间，status 的 `remaining_body_seconds` 是剩余可接单时间；准备本身也会消耗时间。预算不足就 finish 并汇报已完成部分，不自动续租、不连续开新会话维持长任务。75 秒是待真机验证的保守预留，不是恢复耗时保证。
+Native 整个 lease 最长 300 秒，从 Begin 开始计时；start 的 TTL 默认 240 秒，可显式指定 1–300 秒。75 秒及以下不足以留下正文预算，会在 Begin 前拒绝；准备后余量不足 75 秒时不进入 Auto-Lock 和任务 UI。默认 240 是为五分钟上界留余量，故障根因尚未确认。相同 task ID 的 TTL 必须一致，旧状态缺少 TTL 按 300 秒解释。worker 提前保留 75 秒恢复时间，status 的 `remaining_body_seconds` 是剩余可接单时间；准备本身也会消耗时间。预算不足就 finish 并汇报已完成部分，不自动续租、不连续开新会话维持长任务。75 秒是待真机验证的保守预留，不是恢复耗时保证。
 
 Auto-Lock 原值必须从手机实际设置读取并保存，任务中按需设为永不；结束时恢复真实原值，用户中途改成别的值时保留用户改动。不要写死三分钟，不删除 `~/.ictrl/autolock` 或 `~/.ictrl/tasks` 掩盖 pending。新运行时不读取 Windows 的状态。
 

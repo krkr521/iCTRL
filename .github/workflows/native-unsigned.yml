@@ -4,11 +4,43 @@ on:
 permissions:
   contents: read
 jobs:
+  minis-posix:
+    name: Minis offline policy tests (Ubuntu POSIX)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run Minis offline tests with real POSIX locks
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build
+          python3 -B -m unittest discover -s Integrations/Minis/tests -v 2>&1 | tee build/minis-posix-tests-ubuntu.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: minis-posix-test-evidence
+          path: build/minis-posix-tests-ubuntu.log
+          retention-days: 1
+          if-no-files-found: error
   build:
+    needs: minis-posix
     runs-on: macos-15-intel
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run Minis offline tests with real macOS POSIX locks
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build
+          python3 -B -m unittest discover -s Integrations/Minis/tests -v 2>&1 | tee build/minis-posix-tests-macos.log
       - name: Select Xcode 16.4
         run: |
           test -d /Applications/Xcode_16.4.app
@@ -17,6 +49,16 @@ jobs:
         run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
       - name: Build and package (no Apple account)
         run: bash Scripts/build-unsigned.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-policy-test-evidence
+          path: |
+            build/minis-posix-tests-macos.log
+            build/swift-policy-tests.log
+            build/continuous-drag-tests.log
+          retention-days: 1
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: iCTRL-native-unsigned

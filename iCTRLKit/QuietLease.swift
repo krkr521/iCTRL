@@ -178,3 +178,69 @@ struct QuietForegroundConfirmation {
         return matches >= 2 ? .confirmed : .waiting
     }
 }
+
+/// Read-only pre-helper capture. Candidate names and app state are not proof:
+/// two fresh, matching PID samples, separated by the polling interval, are.
+/// The caller rechecks its owner/nonce gate before reads and before one launch.
+struct QuietForegroundCapture {
+    struct Sample: Equatable {
+        let bundleID: String
+        let targetPID: Int32
+        let frontmostBefore: Int32
+        let frontmostAfter: Int32
+
+        var isProven: Bool {
+            !bundleID.isEmpty && targetPID > 0 &&
+                targetPID == frontmostBefore && targetPID == frontmostAfter
+        }
+    }
+    enum Outcome: Equatable { case waiting, confirmed(Sample), expired }
+    static let pollInterval: TimeInterval = 0.1
+
+    /// Names are hints only. A stale first hint cannot hide a later candidate
+    /// whose independently read PID actually owns the unchanged foreground.
+    static func readSample(candidates: [String], frontmostBefore before: Int32,
+                           namedPID: (String) -> Int32, frontmostPID: () -> Int32,
+                           mayRead: () -> Bool) -> Sample? {
+        guard mayRead(), before > 0 else { return nil }
+        var tried = Set<String>()
+        for candidate in candidates where !candidate.isEmpty && tried.insert(candidate).inserted {
+            guard mayRead() else { return nil }
+            let expected = namedPID(candidate)
+            guard mayRead() else { return nil }
+            let after = frontmostPID()
+            guard mayRead(), before == after else { return nil }
+            if expected > 0, expected == before {
+                return Sample(bundleID: candidate, targetPID: expected,
+                              frontmostBefore: before, frontmostAfter: after)
+            }
+        }
+        return nil
+    }
+
+    private let startedAt: TimeInterval
+    private let deadline: TimeInterval
+    private let valid: Bool
+    private var previous: (sample: Sample, at: TimeInterval)?
+
+    init(startedAt: TimeInterval, budget: TimeInterval) {
+        self.startedAt = startedAt
+        self.deadline = startedAt + budget
+        self.valid = startedAt.isFinite && budget.isFinite && budget > 0 && deadline.isFinite
+    }
+
+    func permitsRead(now: TimeInterval) -> Bool {
+        valid && now.isFinite && now >= startedAt && now < deadline
+    }
+
+    mutating func observe(_ sample: Sample?, now: TimeInterval) -> Outcome {
+        guard permitsRead(now: now), previous.map({ now >= $0.at }) ?? true else { return .expired }
+        guard let sample, sample.isProven else { previous = nil; return .waiting }
+        let earlier = previous
+        previous = (sample, now)
+        if let earlier, earlier.sample == sample, now - earlier.at >= Self.pollInterval {
+            return .confirmed(sample)
+        }
+        return .waiting
+    }
+}

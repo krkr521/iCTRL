@@ -116,7 +116,7 @@ class Tests(unittest.TestCase):
             m.atomic(base/"active",task)
             m.atomic(d/"state", {"phase":"complete", "pid":1, "restore":"restored", "store_key":"device:abc", "client_path":None})
             with mock.patch.object(m,"locked",lock), mock.patch.object(m.subprocess,"Popen",side_effect=AssertionError("spawn")):
-                self.assertEqual(m.start(base,task,"device:abc")["status"],"complete")
+                self.assertEqual(m.start(base,task,"device:abc",ttl_seconds=300)["status"],"complete")
                 with self.assertRaises(ValueError): m.start(base,task,"device:other")
 
     def test_cleanup_budget_after_deadline(self):
@@ -192,5 +192,83 @@ class Tests(unittest.TestCase):
                 thread.join(3); self.assertFalse(thread.is_alive())
             self.assertEqual(events,["begin","end"])
             state=m.read(d/"state"); self.assertEqual(state["phase"],"unknown"); self.assertEqual(state["restore"],"pending")
+
+    def test_ttl_idempotency_legacy_and_boundary(self):
+        @contextlib.contextmanager
+        def lock(*a): yield
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td); task="a"*32; d=base/task; d.mkdir(); m.atomic(base/"active",task)
+            m.atomic(d/"state",{"phase":"unknown","store_key":"device:abc","client_path":None})
+            with mock.patch.object(m,"locked",lock), mock.patch.object(m.subprocess,"Popen",side_effect=AssertionError("spawn")):
+                self.assertEqual(m.start(base,task,"device:abc",ttl_seconds=300)["ttl_seconds"],300)
+                with self.assertRaises(ValueError): m.start(base,task,"device:abc",ttl_seconds=240)
+                with self.assertRaises(RuntimeError): m.start(base,"b"*32,"device:abc",ttl_seconds=240)
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(m,"locked",lock), mock.patch.object(m.subprocess,"Popen",side_effect=AssertionError("spawn")):
+                with self.assertRaises(ValueError): m.start(Path(td),"a"*32,"device:abc",ttl_seconds=75)
+
+    def test_worker_ttl_and_insufficient_post_begin_budget(self):
+        events=[]
+        @contextlib.contextmanager
+        def lock(*a): yield
+        fake=types.SimpleNamespace(LOCK_EX=1,LOCK_NB=2,LOCK_UN=4,flock=lambda *a:None)
+        class Session:
+            def __init__(self,raw,**kw): events.append(("ttl",kw["ttl_seconds"])); self.local_deadline=100; self.cleanup_error=None
+            def __enter__(self): events.append("begin"); return self
+            def __exit__(self,*a): events.append("end")
+        @contextlib.contextmanager
+        def managed(*a):
+            events.append("ui"); yield
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td); task="a"*32; d=base/task;d.mkdir()
+            m.atomic(d/"state",{"phase":"starting","pid":os.getpid(),"store_key":"device:abc","client_path":None,"ttl_seconds":240})
+            with mock.patch.dict(sys.modules,{"fcntl":fake}), mock.patch.object(m,"locked",lock):
+                m.worker(base,task,"device:abc",ttl_seconds=240,loader=lambda *a,**k:(None,True),session_cls=Session,manager_cls=lambda *a:None,managed=managed,clock=lambda:26)
+            self.assertEqual(events,[("ttl",240),"begin","end"])
+            self.assertEqual(m.read(d/"state")["ttl_seconds"],240)
+
+    def test_prepare_budget_stops_unsent_tap_and_allows_cleanup(self):
+        now=[24]; sent=[]; budgets=[]
+        @contextlib.contextmanager
+        def lock(*a): yield
+        fake=types.SimpleNamespace(LOCK_EX=1,LOCK_NB=2,LOCK_UN=4,flock=lambda *a:None)
+        def loader(*a,timeout_budget,**k):
+            def raw(method,params):
+                b=timeout_budget(method); budgets.append((method,b)); sent.append(method)
+                if method == "automation_status" and len(sent)==1: now[0]=26
+                return {}
+            return raw,True
+        class Session:
+            cleanup_error=None
+            def __init__(self,raw,**kw): self.raw=raw; self.local_deadline=100
+            def __enter__(self): return self
+            def __exit__(self,*a): self.raw("automation_end",{}); self.raw("automation_status",{})
+            def call(self,method,params): self.raw("automation_status",{}); return self.raw(method,params)
+        @contextlib.contextmanager
+        def managed(manager,device,owner,session):
+            session.call("tap",{}); self.fail("body must not begin"); yield
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td); task="a"*32; d=base/task;d.mkdir()
+            m.atomic(d/"state",{"phase":"starting","pid":os.getpid(),"store_key":"device:abc","client_path":None,"ttl_seconds":240})
+            with mock.patch.dict(sys.modules,{"fcntl":fake}),mock.patch.object(m,"locked",lock):
+                m.worker(base,task,"device:abc",ttl_seconds=240,loader=loader,session_cls=Session,manager_cls=lambda *a:None,managed=managed,clock=lambda:now[0])
+            self.assertEqual(sent,["automation_status","automation_end","automation_status"])
+            self.assertEqual(budgets,[("automation_status",1),("automation_end",5),("automation_status",5)])
+            self.assertEqual(m.read(d/"state")["phase"],"unknown")
+
+    def test_new_task_after_complete_legacy_and_invalid_ttls(self):
+        @contextlib.contextmanager
+        def lock(*a): yield
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td); old="a"*32; d=base/old; d.mkdir();m.atomic(base/"active",old)
+            m.atomic(d/"state",{"phase":"complete","pid":1,"store_key":"device:abc","client_path":None})
+            with mock.patch.object(m,"locked",lock),mock.patch.object(m.subprocess,"Popen",return_value=types.SimpleNamespace(pid=123)) as spawn:
+                out=m.start(base,"b"*32,"device:abc")
+                self.assertEqual(out["ttl_seconds"],240)
+                self.assertIn("240",spawn.call_args.args[0])
+                with self.assertRaises(ValueError): m.start(base,"b"*32,"device:abc",ttl_seconds=300)
+        for ttl in (0,301,True,240.0):
+            with self.subTest(ttl=ttl), tempfile.TemporaryDirectory() as td:
+                with self.assertRaises(ValueError): m.start(Path(td),"a"*32,"device:abc",ttl_seconds=ttl)
 
 if __name__ == "__main__": unittest.main()

@@ -1,15 +1,15 @@
 {
   "archive": "ictrl-ready-taskscope.zip",
-  "sha256": "8d89d91babba26a3cc421ad821e58a1c668af5f9a1056afddee368ac62531e25",
-  "bytes": 28442,
+  "sha256": "6baf2b74277192e09adf9a9694371c0ceb8e610f839bfb8585e803116b8b2cc6",
+  "bytes": 28896,
   "files": {
     "install.sh": {
       "bytes": 9019,
       "sha256": "dfde7845c5af56296d42b3bdb95c137350c8d198cd5f306041580c599a6bc21f"
     },
     "ictrl-ready/SKILL.md": {
-      "bytes": 5323,
-      "sha256": "234e02d767ffb1b18338cc49fdd80300449683e348cad85c875e0d99cd0db05c"
+      "bytes": 5687,
+      "sha256": "3c83019b6ad1c88bf57960fc3e80c71f99ddd80f29e6c2ab6ecbc522e5c82a09"
     },
     "ictrl-ready/scripts/ensure-ictrl.sh": {
       "bytes": 6304,
@@ -40,14 +40,19 @@
       "sha256": "4f51b93072f3449c88a46d8cf39d70ff59a7a8600ac6f77b54eabac7352a6a67"
     },
     "ictrl-ready/scripts/task_session.py": {
-      "bytes": 17909,
-      "sha256": "602e3c28434c59433edebf9c64f3b42345301440d3a1d2b424e661301d579e1c"
+      "bytes": 19832,
+      "sha256": "a6eb8874c1aad5148eca82ba167ebd215f319629aaea1504492168da6a90172f"
     }
   },
-  "status": "reviewed_local_candidate_not_installed",
+  "status": "reviewed_ttl240_candidate_not_installed",
+  "default_ttl_seconds": 240,
+  "maximum_ttl_seconds": 300,
+  "restore_reserve_seconds": 75,
+  "previous_archive_sha256": "8d89d91babba26a3cc421ad821e58a1c668af5f9a1056afddee368ac62531e25",
   "limits": [
-    "Native max300s includes preparation; 75s restore reserve not phone-validated",
+    "75s cleanup reserve is policy, not a measured phone recovery guarantee",
     "Minis stop button has no native worker cancellation hook",
-    "iSH scheduling, locks and task worker need phone acceptance"
+    "iSH scheduling and cross-shell worker require device acceptance",
+    "TTL240 success does not prove a five-minute deadline root cause"
   ]
 }

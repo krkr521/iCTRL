@@ -1247,9 +1247,28 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                     srv.quietLog(.helperLaunchSkipped, action: launch.action, leaseID: launch.leaseID, reason: .helperDeadline)
                     return
                 }
-                let captured: String? = DispatchQueue.main.sync {
-                    if UIApplication.shared.applicationState == .active { return Bundle.main.bundleIdentifier }
-                    return self.actionHandler?.quietForegroundBundleID()
+                var capture = QuietForegroundCapture(startedAt: ProcessInfo.processInfo.systemUptime, budget: 2)
+                let mayCapture = {
+                    self.server === srv && srv.quietMayLaunch(launch) &&
+                        capture.permitsRead(now: ProcessInfo.processInfo.systemUptime)
+                }
+                var captured: String?
+                while mayCapture() {
+                    let sample: QuietForegroundCapture.Sample? = DispatchQueue.main.sync {
+                        guard mayCapture() else { return nil }
+                        return self.actionHandler?.quietForegroundSample(mayRead: mayCapture)
+                    }
+                    guard mayCapture() else { break }
+                    let outcome = capture.observe(sample, now: ProcessInfo.processInfo.systemUptime)
+                    if case let .confirmed(sample) = outcome { captured = sample.bundleID; break }
+                    if outcome == .expired { break }
+                    Thread.sleep(forTimeInterval: QuietForegroundCapture.pollInterval)
+                }
+                guard self.server === srv else { return }
+                guard srv.quietMayLaunch(launch) else {
+                    _ = srv.quietAbortBeforeLaunch(launch, diagnostic: "helper_not_launched_before_deadline")
+                    srv.quietLog(.helperLaunchSkipped, action: launch.action, leaseID: launch.leaseID, reason: .helperDeadline)
+                    return
                 }
                 let target: String?
                 if launch.action == "begin" {
@@ -1269,15 +1288,27 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                     srv.quietLog(.helperLaunchSkipped, action: launch.action, leaseID: launch.leaseID, reason: .foregroundBeforeHelperUnknown)
                     return
                 }
-                guard srv.quietMarkLaunchAttempted(launch) else {
+                guard mayCapture(), srv.quietMarkLaunchAttempted(launch) else {
                     _ = srv.quietAbortBeforeLaunch(launch, diagnostic: "helper_not_launched_before_deadline")
                     srv.quietLog(.helperLaunchSkipped, action: launch.action, leaseID: launch.leaseID, reason: .helperDeadline)
                     return
                 }
                 self.quietRestoreContext = [launch.nonce: target]
                 var opened = false
-                let exception = DispatchQueue.main.sync {
-                    ObjCException.catching { opened = ForegroundApp.open(launch.url) }
+                var skippedAfterMark = !mayCapture()
+                let exception = skippedAfterMark ? nil : DispatchQueue.main.sync {
+                    ObjCException.catching {
+                        guard mayCapture() else { skippedAfterMark = true; return }
+                        opened = ForegroundApp.open(launch.url)
+                    }
+                }
+                if skippedAfterMark {
+                    self.quietRestoreContext.removeValue(forKey: launch.nonce)
+                    // Marked launches stay conservative even if the final guard
+                    // skips open: do not take the safe, never-attempted Begin exit.
+                    srv.quietFailLaunch(launch, diagnostic: "helper_not_launched_before_deadline")
+                    srv.quietLog(.helperLaunchSkipped, action: launch.action, leaseID: launch.leaseID, reason: .helperDeadline)
+                    return
                 }
                 if !opened || exception != nil {
                     self.quietRestoreContext.removeValue(forKey: launch.nonce)

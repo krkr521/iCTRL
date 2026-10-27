@@ -105,7 +105,7 @@ def public_status(directory):
     if phase in {"starting", "running", "stopping"} and not alive(state.get("pid")):
         phase = "unknown"
     from automation_session import _QUIET_PHASES
-    out = {"status": phase, "restore": state.get("restore", "pending") if phase == "complete" else "pending"}
+    out = {"ttl_seconds": state.get("ttl_seconds", 300), "status": phase, "restore": state.get("restore", "pending") if phase == "complete" else "pending"}
     if phase == "running" and type(state.get("body_deadline")) in (int, float) and math.isfinite(state["body_deadline"]):
         out["remaining_body_seconds"] = max(0, int(state["body_deadline"] - time.monotonic()))
     if phase == "stopping" and type(state.get("remaining_body_seconds")) is int:
@@ -115,9 +115,16 @@ def public_status(directory):
     return out
 
 
-def start(base, task_id, store_key, client_path=None):
+def start_hash(task_id, store_key, client_path, ttl_seconds):
+    raw = json.dumps([task_id, store_key, client_path, ttl_seconds], ensure_ascii=False, separators=(",", ":")).encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def start(base, task_id, store_key, client_path=None, ttl_seconds=240):
+    if type(ttl_seconds) is not int or not 1 <= ttl_seconds <= 300: raise ValueError("invalid TTL")
     if not ID.fullmatch(task_id): raise ValueError("invalid task id")
     if not re.fullmatch(r"device:[A-Za-z0-9_-]{1,128}", store_key): raise ValueError("device store key required")
+    request_hash = start_hash(task_id, store_key, client_path, ttl_seconds)
     with locked(base):
         task, directory = current(base)
         if task:
@@ -125,24 +132,27 @@ def start(base, task_id, store_key, client_path=None):
             if state.get("store_key") != store_key or state.get("client_path") != client_path:
                 raise ValueError("task ownership mismatch")
             status = public_status(directory)
-            if task == task_id: return {"task_id": task, **status}
+            if task == task_id:
+                if state.get("ttl_seconds", 300) != ttl_seconds or state.get("start_hash", request_hash) != request_hash: raise ValueError("task start mismatch")
+                return {"task_id": task, **status}
             if status["status"] != "complete": raise RuntimeError("previous task not confirmed complete")
+        if ttl_seconds <= 75: raise ValueError("TTL leaves no body budget")
         task = task_id; directory = base / task
         directory.mkdir(mode=0o700)
-        atomic(directory / "state", {"phase": "starting", "pid": os.getpid(), "store_key":store_key, "client_path":client_path})
+        atomic(directory / "state", {"phase": "starting", "pid": os.getpid(), "store_key":store_key, "client_path":client_path, "ttl_seconds":ttl_seconds, "start_hash":request_hash})
         atomic(base / "active", task)
         log_fd = os.open(directory / "worker.log", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            argv = [sys.executable, str(Path(__file__).resolve()), "_worker", task, store_key]
+            argv = [sys.executable, str(Path(__file__).resolve()), "_worker", task, store_key, "--ttl-seconds", str(ttl_seconds)]
             if client_path: argv += ["--client-path", client_path]
             try:
                 process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log_fd, stderr=log_fd, start_new_session=True, close_fds=True)
             except BaseException:
-                atomic(directory / "state", {"phase": "unknown", "restore": "pending", "store_key":store_key, "client_path":client_path})
+                atomic(directory / "state", {"phase": "unknown", "restore": "pending", "store_key":store_key, "client_path":client_path, "ttl_seconds":ttl_seconds, "start_hash":request_hash})
                 raise
-            atomic(directory / "state", {"phase": "starting", "pid": process.pid, "store_key":store_key, "client_path":client_path})
+            atomic(directory / "state", {"phase": "starting", "pid": process.pid, "store_key":store_key, "client_path":client_path, "ttl_seconds":ttl_seconds, "start_hash":request_hash})
         finally: os.close(log_fd)
-        return {"task_id": task, "status": "starting", "restore": "pending"}
+        return {"task_id": task, "status": "starting", "restore": "pending", "ttl_seconds":ttl_seconds}
 
 
 def transport_budget(method, session, body, clock=time.monotonic, not_after=None):
@@ -159,7 +169,7 @@ class StartCancelled(Exception):
     pass
 
 
-def worker(base, task, store_key, client_path=None, *, session_cls=None, manager_cls=None, managed=None, loader=None, clock=time.monotonic, sleep=time.sleep):
+def worker(base, task, store_key, client_path=None, *, ttl_seconds=300, session_cls=None, manager_cls=None, managed=None, loader=None, clock=time.monotonic, sleep=time.sleep):
     from automation_session import AutomationSession
     from managed_autolock import ManagedAutoLock
     from task_context import managed_task
@@ -177,30 +187,37 @@ def worker(base, task, store_key, client_path=None, *, session_cls=None, manager
     except OSError:
         os.close(lockfd); return
     state = read(directory / "state")
-    if state.get("pid") != os.getpid() or state.get("phase") != "starting" or state.get("store_key") != store_key or state.get("client_path") != client_path:
+    if state.get("pid") != os.getpid() or state.get("phase") != "starting" or state.get("store_key") != store_key or state.get("client_path") != client_path or state.get("ttl_seconds", 300) != ttl_seconds or type(ttl_seconds) is not int or not 76 <= ttl_seconds <= 300:
         fcntl.flock(lockfd, fcntl.LOCK_UN); os.close(lockfd); return
-    phase = {"body": False, "not_after": None}; session = None; result = "unknown"; restore = "pending"; diagnostics = {}
+    request_hash = start_hash(task, store_key, client_path, ttl_seconds)
+    if state.get("start_hash", request_hash) != request_hash:
+        fcntl.flock(lockfd, fcntl.LOCK_UN); os.close(lockfd); return
+    phase = {"body": False, "preparing": False, "not_after": None}; session = None; result = "unknown"; restore = "pending"; diagnostics = {}
     def budget(method):
-        return transport_budget(method, session, phase["body"], clock, phase["not_after"])
+        return transport_budget(method, session, phase["body"] or phase["preparing"], clock, phase["not_after"])
     try:
         with locked(base):
             if (directory / "stop").exists(): raise StartCancelled()
         raw, supported = loader(store_key, client_path=client_path, timeout_budget=budget)
-        session = session_cls(raw, ttl_seconds=300, supports_quiet=supported)
+        session = session_cls(raw, ttl_seconds=ttl_seconds, supports_quiet=supported)
         with contextlib.ExitStack() as stack:
             with locked(base):
                 if (directory / "stop").exists(): raise StartCancelled()
-                atomic(directory / "state", {"phase":"starting", "pid":os.getpid(), "store_key":store_key, "client_path":client_path, "stage_started":"begin"})
+                atomic(directory / "state", {"phase":"starting", "pid":os.getpid(), "store_key":store_key, "client_path":client_path, "ttl_seconds":ttl_seconds, "start_hash":request_hash, "stage_started":"begin"})
             stack.enter_context(session)
             with locked(base):
-                if (directory / "stop").exists(): raise StartCancelled()
-                atomic(directory / "state", {"phase":"starting", "pid":os.getpid(), "store_key":store_key, "client_path":client_path, "stage_started":"autolock"})
+                if (directory / "stop").exists() or clock() >= session.local_deadline - 75: raise StartCancelled()
+                atomic(directory / "state", {"phase":"starting", "pid":os.getpid(), "store_key":store_key, "client_path":client_path, "ttl_seconds":ttl_seconds, "start_hash":request_hash, "stage_started":"autolock"})
             manager = manager_cls(Path.home() / ".ictrl" / "autolock")
-            task_state = stack.enter_context(managed(manager, store_key, "minis-agent", session))
+            phase["preparing"] = True
+            try:
+                task_state = stack.enter_context(managed(manager, store_key, "minis-agent", session))
+            finally:
+                phase["preparing"] = False
             if True:
                 phase["body"] = True
                 try:
-                    atomic(directory / "state", {"phase":"running", "pid":os.getpid(), "store_key":store_key, "client_path":client_path, "body_deadline":session.local_deadline - 75})
+                    atomic(directory / "state", {"phase":"running", "pid":os.getpid(), "store_key":store_key, "client_path":client_path, "ttl_seconds":ttl_seconds, "start_hash":request_hash, "body_deadline":session.local_deadline - 75})
                     while clock() < session.local_deadline - 75:
                         if (directory / "stop").exists(): break
                         with locked(base):
@@ -238,7 +255,7 @@ def worker(base, task, store_key, client_path=None, *, session_cls=None, manager
                 finally:
                     with locked(base):
                         phase["body"] = False
-                        atomic(directory / "state", {"phase":"stopping", "pid":os.getpid(), "store_key":store_key, "client_path":client_path, "remaining_body_seconds":max(0, int(session.local_deadline - 75 - clock()))})
+                        atomic(directory / "state", {"phase":"stopping", "pid":os.getpid(), "store_key":store_key, "client_path":client_path, "ttl_seconds":ttl_seconds, "start_hash":request_hash, "remaining_body_seconds":max(0, int(session.local_deadline - 75 - clock()))})
         restore = task_state.restore_status
         result = "complete"
     except StartCancelled as error:
@@ -253,7 +270,7 @@ def worker(base, task, store_key, client_path=None, *, session_cls=None, manager
         from automation_session import quiet_failure_diagnostics
         diagnostics = quiet_failure_diagnostics(error)
     finally:
-        atomic(directory / "state", {"phase":result, "pid":os.getpid(), "restore":restore, "store_key":store_key, "client_path":client_path, **diagnostics})
+        atomic(directory / "state", {"phase":result, "pid":os.getpid(), "restore":restore, "store_key":store_key, "client_path":client_path, "ttl_seconds":ttl_seconds, "start_hash":request_hash, **diagnostics})
         fcntl.flock(lockfd, fcntl.LOCK_UN)
         os.close(lockfd)
 
@@ -312,17 +329,17 @@ def request_call(base, task_id, request_id, command, result_path, wait=90):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Bounded existing-pairing task session")
     sub = parser.add_subparsers(dest="action", required=True)
-    s = sub.add_parser("start"); s.add_argument("--task-id", required=True); s.add_argument("--store-key", required=True); s.add_argument("--client-path")
+    s = sub.add_parser("start"); s.add_argument("--task-id", required=True); s.add_argument("--store-key", required=True); s.add_argument("--client-path"); s.add_argument("--ttl-seconds", type=int, default=240)
     for name in ("status", "finish"):
         item = sub.add_parser(name); item.add_argument("--task-id", required=True)
     c = sub.add_parser("call"); c.add_argument("--task-id", required=True); c.add_argument("--request-id", required=True); c.add_argument("--method", required=True); c.add_argument("--params", default="{}"); c.add_argument("--results-file", required=True); c.add_argument("--wait", type=float, default=90)
-    w = sub.add_parser("_worker"); w.add_argument("task"); w.add_argument("store_key"); w.add_argument("--client-path")
+    w = sub.add_parser("_worker"); w.add_argument("task"); w.add_argument("store_key"); w.add_argument("--client-path"); w.add_argument("--ttl-seconds", type=int, default=300)
     args = parser.parse_args(argv); base = root()
     try:
         if args.action == "_worker":
             if not ID.fullmatch(args.task): raise ValueError("invalid task")
-            worker(base, args.task, args.store_key, args.client_path); return 0
-        if args.action == "start": out = start(base, args.task_id, args.store_key, args.client_path)
+            worker(base, args.task, args.store_key, args.client_path, ttl_seconds=args.ttl_seconds); return 0
+        if args.action == "start": out = start(base, args.task_id, args.store_key, args.client_path, args.ttl_seconds)
         elif args.action == "call": out = request_call(base, args.task_id, args.request_id, {"method":args.method, "params":json.loads(args.params)}, args.results_file, args.wait)
         else:
             with locked(base):
