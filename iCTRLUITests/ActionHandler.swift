@@ -181,8 +181,18 @@ class ActionHandler {
         return bid
     }
 
-    /// Quiet helper uses the same PID-aware foreground resolver as normal UI RPCs.
-    func quietForegroundBundleID() -> String? { resolveForegroundBundleId() }
+    /// Quiet captures must prove the named app owns the actual front PID.
+    /// Normal RPCs retain their existing resolver behavior; a transitional
+    /// app-state/cache guess must not become a durable Quiet restore target.
+    func quietForegroundBundleID() -> String? {
+        let rememberedPIDs = frontByPID
+        defer { frontByPID = rememberedPIDs } // Never learn PID names during a Quiet transition.
+        guard let candidate = resolveForegroundBundleIdUncached() else { return nil }
+        let expected = ForegroundApp.processID(forBundleID: candidate)
+        let actual = ForegroundApp.frontmostPID()
+        guard expected > 0, actual == expected else { return nil }
+        return candidate
+    }
 
     /// Home restoration follows the verified Home RPC path, including its fallback.
     func quietReturnHome() -> Bool { pressHome().1 == nil }

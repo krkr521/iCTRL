@@ -124,3 +124,34 @@ public struct QuietLease {
 }
 
 public enum LeaseError: Error { case invalid }
+
+/// Pure confirmation policy for Quiet restoration. PID identity must come from
+/// the target bundle, never from a learned frontmost-PID/name mapping.
+struct QuietForegroundConfirmation {
+    enum Outcome: Equatable { case waiting, confirmed, expired }
+    private let startedAt: TimeInterval
+    private let deadline: TimeInterval
+    private let valid: Bool
+    private var lastTargetPID: Int32 = 0
+    private var lastFrontmostPID: Int32 = 0
+    private var matches = 0
+
+    init(startedAt: TimeInterval, budget: TimeInterval) {
+        self.startedAt = startedAt
+        self.deadline = startedAt + budget
+        self.valid = startedAt.isFinite && budget.isFinite && budget > 0 && deadline.isFinite
+    }
+
+    func permitsAction(now: TimeInterval) -> Bool {
+        valid && now.isFinite && now >= startedAt && now < deadline
+    }
+
+    mutating func observe(targetPID: Int32, frontmostPID: Int32, now: TimeInterval) -> Outcome {
+        guard permitsAction(now: now) else { return .expired }
+        if targetPID != lastTargetPID || frontmostPID != lastFrontmostPID { matches = 0 }
+        lastTargetPID = targetPID
+        lastFrontmostPID = frontmostPID
+        matches = targetPID > 0 && frontmostPID == targetPID ? matches + 1 : 0
+        return matches >= 2 ? .confirmed : .waiting
+    }
+}

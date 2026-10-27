@@ -1298,38 +1298,74 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 // Do not move the screen for a stale callback superseded by End,
                 // takeover, or expiry while waiting behind another UI operation.
                 guard srv.quietMayRestore(request) else { return }
-                let before = self.actionHandler?.quietForegroundBundleID()
-                guard before == "com.apple.shortcuts" || before == target else {
+                // Do not name a transition PID through the normal learned cache:
+                // XCTest app state and activeApplications can briefly disagree.
+                let beforePID = ForegroundApp.frontmostPID()
+                let shortcutsPID = ForegroundApp.processID(forBundleID: "com.apple.shortcuts")
+                let targetPIDBefore = ForegroundApp.processID(forBundleID: target)
+                guard beforePID > 0,
+                      (beforePID == shortcutsPID || beforePID == targetPIDBefore) else {
                     _ = srv.quietFinishRestoration(request, succeeded: false,
                                                     diagnostic: "foreground_changed_during_helper")
                     Self.logBuffer.append("Quiet foreground changed during helper; UI remains blocked")
                     return
                 }
-                var opened = false
-                if before == target {
-                    opened = true
-                } else if target == "com.apple.springboard" {
-                    opened = DispatchQueue.main.sync { self.actionHandler?.quietReturnHome() ?? false }
-                } else {
+                // One action only. Its time counts against the confirmation budget;
+                // Home's normal RPC includes polling and a fallback, so do not call
+                // that complete RPC inside main.sync and then start a second wait.
+                let started = ProcessInfo.processInfo.systemUptime
+                var proof = QuietForegroundConfirmation(startedAt: started, budget: 2)
+                var opened = beforePID == targetPIDBefore
+                var changedBeforeAction = false
+                var expiredBeforeAction = false
+                if !opened {
+                    guard srv.quietMayRestore(request) else { return }
                     let exception = DispatchQueue.main.sync {
-                        ObjCException.catching { opened = ForegroundApp.openBundleID(target) }
+                        ObjCException.catching {
+                            // Recheck after waiting for the main queue: a user's
+                            // switch must not be undone by this queued action.
+                            guard srv.quietMayRestore(request) else { return }
+                            let latestPID = ForegroundApp.frontmostPID()
+                            guard latestPID > 0,
+                                  (latestPID == beforePID || latestPID == targetPIDBefore) else {
+                                changedBeforeAction = true
+                                return
+                            }
+                            // A queued action must not start after the budget expires.
+                            // Once started, synchronous XCTest activation cannot be cancelled.
+                            guard srv.quietMayRestore(request),
+                                  proof.permitsAction(now: ProcessInfo.processInfo.systemUptime) else {
+                                expiredBeforeAction = true
+                                return
+                            }
+                            opened = target == "com.apple.springboard"
+                                ? ForegroundApp.activateOrLaunchBundleID(target)
+                                : ForegroundApp.openBundleID(target)
+                        }
                     }
                     if exception != nil { opened = false }
                 }
                 var confirmed = false
+                var diagnostic = changedBeforeAction ? "foreground_changed_before_restore"
+                    : (expiredBeforeAction ? "foreground_restore_budget_expired" : "foreground_activation_rejected")
                 if opened {
-                    let until = Date().addingTimeInterval(2)
-                    var consecutive = 0
-                    repeat {
-                        guard srv.quietMayRestore(request) else { return }
-                        let actual = self.actionHandler?.quietForegroundBundleID()
-                        consecutive = actual == target ? consecutive + 1 : 0
-                        if consecutive >= 2 { confirmed = true; break }
+                    // Resolve the target itself afresh, never infer its identity
+                    // from whichever PID happened to become frontmost.
+                    diagnostic = "foreground_target_pid_unavailable"
+                    while srv.quietMayRestore(request) {
+                        let targetPID = ForegroundApp.processID(forBundleID: target)
+                        let frontmostPID = ForegroundApp.frontmostPID()
+                        if targetPID > 0 { diagnostic = "foreground_pid_unconfirmed" }
+                        let outcome = proof.observe(targetPID: targetPID, frontmostPID: frontmostPID,
+                                                    now: ProcessInfo.processInfo.systemUptime)
+                        if outcome == .confirmed { confirmed = true; break }
+                        if outcome == .expired { break }
                         Thread.sleep(forTimeInterval: 0.1)
-                    } while Date() < until
+                    }
+                    guard srv.quietMayRestore(request) else { return }
                 }
                 let accepted = srv.quietFinishRestoration(request, succeeded: confirmed,
-                                                            diagnostic: confirmed ? nil : "foreground_restore_unconfirmed")
+                                                            diagnostic: confirmed ? nil : diagnostic)
                 if accepted { Self.logBuffer.append(confirmed ? "Quiet foreground restored and confirmed" : "Quiet foreground restoration unconfirmed; UI remains blocked") }
             }
         }
