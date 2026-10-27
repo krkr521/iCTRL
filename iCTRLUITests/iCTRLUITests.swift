@@ -1196,7 +1196,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
     }
 
     /// Wire RPC dispatch + public logs onto a server instance.
-    private let nativeClipboard = NativeClipboardService()
+    private let nativeClipboard = NativeClipboardService(log: { iCTRLUITests.logBuffer.append($0) })
     /// Accessed only on rpcQueue. Nonces are never logged or persisted.
     private var quietBeginContext: [String: String] = [:]
     private var quietRestoreContext: [String: String] = [:]
@@ -1244,6 +1244,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 guard self.server === srv else { return }
                 guard srv.quietMayLaunch(launch) else {
                     _ = srv.quietAbortBeforeLaunch(launch, diagnostic: "helper_not_launched_before_deadline")
+                    srv.quietLog(.helperLaunchSkipped, action: launch.action, leaseID: launch.leaseID, reason: .helperDeadline)
                     return
                 }
                 let captured: String? = DispatchQueue.main.sync {
@@ -1265,11 +1266,12 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                     if !srv.quietAbortBeforeLaunch(launch, diagnostic: "foreground_before_helper_unknown") {
                         srv.quietFailLaunch(launch, diagnostic: "foreground_before_helper_unknown")
                     }
-                    Self.logBuffer.append("Quiet helper not launched: original foreground unavailable")
+                    srv.quietLog(.helperLaunchSkipped, action: launch.action, leaseID: launch.leaseID, reason: .foregroundBeforeHelperUnknown)
                     return
                 }
                 guard srv.quietMarkLaunchAttempted(launch) else {
                     _ = srv.quietAbortBeforeLaunch(launch, diagnostic: "helper_not_launched_before_deadline")
+                    srv.quietLog(.helperLaunchSkipped, action: launch.action, leaseID: launch.leaseID, reason: .helperDeadline)
                     return
                 }
                 self.quietRestoreContext = [launch.nonce: target]
@@ -1280,9 +1282,9 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 if !opened || exception != nil {
                     self.quietRestoreContext.removeValue(forKey: launch.nonce)
                     srv.quietFailLaunch(launch, diagnostic: "shortcut_launch_failed")
-                    Self.logBuffer.append("Quiet Shortcut launch failed")
+                    srv.quietLog(.helperLaunchFailed, action: launch.action, leaseID: launch.leaseID, reason: .shortcutLaunchFailed)
                 } else {
-                    Self.logBuffer.append("Quiet Shortcut launch accepted (awaiting callback and foreground restoration)")
+                    srv.quietLog(.helperLaunchAccepted, action: launch.action, leaseID: launch.leaseID)
                 }
             }
         }
@@ -1292,7 +1294,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 guard self.server === srv, srv.quietMayRestore(request) else { return }
                 guard let target = self.quietRestoreContext.removeValue(forKey: request.nonce) else {
                     _ = srv.quietFinishRestoration(request, succeeded: false, diagnostic: "foreground_context_missing")
-                    Self.logBuffer.append("Quiet foreground restoration blocked: context missing")
+                    srv.quietLog(.restoreFinished, action: request.action, leaseID: request.leaseID, reason: .foregroundContextMissing)
                     return
                 }
                 // Do not move the screen for a stale callback superseded by End,
@@ -1307,7 +1309,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                       (beforePID == shortcutsPID || beforePID == targetPIDBefore) else {
                     _ = srv.quietFinishRestoration(request, succeeded: false,
                                                     diagnostic: "foreground_changed_during_helper")
-                    Self.logBuffer.append("Quiet foreground changed during helper; UI remains blocked")
+                    srv.quietLog(.restoreFinished, action: request.action, leaseID: request.leaseID, reason: .foregroundChangedDuringHelper)
                     return
                 }
                 // One action only. Its time counts against the confirmation budget;
@@ -1366,7 +1368,10 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 }
                 let accepted = srv.quietFinishRestoration(request, succeeded: confirmed,
                                                             diagnostic: confirmed ? nil : diagnostic)
-                if accepted { Self.logBuffer.append(confirmed ? "Quiet foreground restored and confirmed" : "Quiet foreground restoration unconfirmed; UI remains blocked") }
+                if accepted {
+                    srv.quietLog(.restoreFinished, action: request.action, leaseID: request.leaseID,
+                                 reason: confirmed ? nil : QuietDiagnostics.Reason(context: diagnostic))
+                }
             }
         }
         srv.onRPCRequest = { [weak self, weak srv] method, params, owner, completion in

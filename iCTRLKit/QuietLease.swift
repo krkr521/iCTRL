@@ -60,6 +60,29 @@ public struct QuietLease {
         return true
     }
 
+    /// Read-only explanation of the existing callback guards. The mutating
+    /// callback above remains the sole authority for transitions/consumption.
+    func callbackClassification(nonce: String, action: String, reportedDeadline: String,
+                                now: TimeInterval) -> QuietDiagnostics.CallbackClassification {
+        guard let p = pending else { return .noPending }
+        guard p.nonce == nonce else { return .nonceMismatch }
+        guard p.action == action else { return .actionMismatch }
+        guard p.expectedDeadline == reportedDeadline else { return .deadlineMismatch }
+        guard now.isFinite else { return .invalidClock }
+        guard now < p.expiry else { return .callbackWindowElapsed }
+        guard action != "begin" || now < deadline else { return .leaseExpired }
+        guard (action == "begin" && state == .preparing) ||
+              (action == "end" && state == .ending) ||
+              (action == "inspect" && state == .restorationPending) else { return .stateMismatch }
+        return .accepted
+    }
+
+    func matchesCallbackNonce(_ nonce: String) -> Bool {
+        pending?.nonce == nonce || restoring?.nonce == nonce
+    }
+
+    var restoringAction: String? { restoring?.action }
+
     public func mayRestore(nonce: String, now: TimeInterval) -> Bool {
         guard let value = restoring, state == .restoring, value.nonce == nonce, now.isFinite else { return false }
         return value.action != "begin" || now < deadline

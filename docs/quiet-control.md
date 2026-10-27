@@ -22,6 +22,53 @@ Human-authored **Inspect End** actions: validate fields and callback, but accept
 
 The user configures `iCTRL Automation` with no ordinary allowed apps/people and relevant breakthrough options off, and verifies actual message banners. An existing DND/Work/Sleep Focus makes Begin fail rather than overwrite it. Focus is global, so Agent and manual web cannot simultaneously have opposite notification behavior. iOS may still show critical/emergency/system alerts. The app's `INFocusStatusCenter` cannot report the Focus name or set Focus; it is not used here.
 
+## Safe diagnostic observations
+
+Diagnostics do not change the TTL, callback admission, single-use nonce,
+foreground confirmation, End idempotency, or manual-recovery rules. The only
+accepted callback body and HTTP status behavior remain the contract above.
+
+Quiet log lines use a finite `event`, `action`, `classification`, `focus_result`,
+`state`, `reason`, and optional End `source`. They never include a callback body,
+URL, nonce, lease/token identity, arbitrary Focus/app name, or exception text.
+Framing rejection is `framing_413`; forbidden origin/query is
+`origin_query_403`; parser failures are `contract_400`, `content_type_400`,
+`size_400`, `json_shape_400`, `nonce_shape_400`, `action_400`, `focus_value_400`,
+or `deadline_400`. Parser/HTTP rejection uses `action=unknown`. A fully parsed
+report can use only begin/end/inspect and dedicated/previous/unavailable/off/
+preserved/other_allowed. These are reported observations, not system attestation.
+Lease rejection identifies a missing pending callback, nonce/action/deadline
+mismatch, invalid clock, elapsed callback window, expired lease, or wrong state
+with a fixed `_409` classification. Accepted is `accepted_204`; it still requires
+foreground restoration before authorization. End source is exactly `owner_end`,
+`ttl_expiry`, or `manual_takeover` when an End launch is actually prepared.
+
+Owner-bound `automation_status` / `automation_owner_status` may additionally
+return `begin_diagnostic`, `begin_callback_classification`, `begin_focus_result`,
+`begin_context_diagnostic`,
+`last_callback_classification`, and `last_callback_action`. They are process-local,
+reset for a new lease, and absent for another token's lease. End does not erase
+the Begin result: a successful End can leave `context_diagnostic` empty while
+`begin_diagnostic=callback_window_elapsed` still explains why recovery is pending.
+Only nonce-associated parsed reports update callback fields; malformed or
+unmatched reports appear in safe logs without being attributed to an owner.
+Missing owner callback fields do not prove that no HTTP request arrived.
+
+Native clipboard logs contain only a validated method and fixed stage/reason.
+The eight-second pending reply logs the last entered stage: queued, prepare,
+foreground_lookup, foreground_activation, foreground_wait, access,
+permission_pending, or restore. `permission_pending` means the string accessor
+was entered; it does not prove that a system permission dialog is visible.
+No clipboard text, byte count, change count, original app, or exception is logged.
+Timeout still neither cancels UIKit nor releases busy, and must not trigger a
+retry. Payload and RPC response behavior are unchanged.
+
+`Scripts/build-unsigned.sh` runs the full Foundation `swift test` suite before
+building the two apps. This includes `QuietDiagnosticTests` for parser classes,
+safe formatting, unchanged lease boundaries, owner isolation, and preservation
+of Begin failures through End. The iOS UI queue, real HTTP framing, clipboard
+permission prompts, and installed Shortcuts still require device acceptance.
+
 ## Limits requiring device acceptance
 
 Confirm on this iOS build that Shortcuts exposes Get Current Focus and Set Focus Until Date, can receive the URL text while locked/backgrounded, and can POST to the Runner's loopback port. Confirm real message-banner behavior while the target app is visible and on manual takeover. Opening a Shortcut URL or obtaining HTTP 204 alone is insufficient. If Begin was still running or its callback was lost, an early End `off` report does not prove that Begin cannot turn Focus on later. The server retains `restoration_pending` and blocks manual UI until the deadline plus safety margin and a fresh inspection reports off or preserved user Focus. Same-name off/on (ABA) by the user remains unobservable. Physical touch pause is not implemented.

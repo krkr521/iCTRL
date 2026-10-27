@@ -9,19 +9,25 @@ final class NativeClipboardService {
     private let stateLock = NSLock()
     private var busy = false
     private let navigation = DispatchQueue(label: "com.openminis.ictrl.native-clipboard.navigation")
+    private let log: (String) -> Void
+
+    init(log: @escaping (String) -> Void = { _ in }) { self.log = log }
 
     private final class Pending {
         let request: NativeClipboardRequest
         let reply: Reply
         let authorize: () -> JSONRPCError?
+        let log: (String) -> Void
         let lock = NSLock()
         private var replied = false
+        private var stage: NativeClipboardDiagnostics.Stage = .queued
         private(set) var mutationStarted = false
         var originalApp: String?
         var switched = false
 
-        init(_ request: NativeClipboardRequest, authorize: @escaping () -> JSONRPCError?, reply: @escaping Reply) {
-            self.request = request; self.authorize = authorize; self.reply = reply
+        init(_ request: NativeClipboardRequest, authorize: @escaping () -> JSONRPCError?,
+             log: @escaping (String) -> Void, reply: @escaping Reply) {
+            self.request = request; self.authorize = authorize; self.log = log; self.reply = reply
         }
         var pending: Bool { lock.lock(); defer { lock.unlock() }; return !replied }
         func beginMutation() -> Bool {
@@ -30,15 +36,27 @@ final class NativeClipboardService {
             mutationStarted = true
             return true
         }
-        func send(_ value: [String: JSONValue]?, _ error: JSONRPCError?) {
-            lock.lock(); let first = !replied; replied = true; lock.unlock()
-            if first { reply(value, error) }
+        func mark(_ next: NativeClipboardDiagnostics.Stage) {
+            lock.lock(); let changed = !replied && stage != next
+            if changed { stage = next }
+            lock.unlock()
+            if changed { log(NativeClipboardDiagnostics.message(method: .init(request.method), stage: next, reason: .entered)) }
+        }
+        func send(_ value: [String: JSONValue]?, _ error: JSONRPCError?,
+                  reason: NativeClipboardDiagnostics.Reason? = nil) {
+            lock.lock(); let first = !replied; let lastStage = stage; replied = true; lock.unlock()
+            if first {
+                log(NativeClipboardDiagnostics.message(method: .init(request.method),
+                    stage: reason == .timeout ? lastStage : .finished,
+                    reason: reason ?? (error == nil ? .completed : .failed)))
+                reply(value, error)
+            }
         }
         func timedOut() {
             lock.lock(); let changed = mutationStarted; lock.unlock()
             send(nil, NativeClipboardService.failure("clipboard_pending",
                 "Native clipboard access has not finished. Check the iPhone for an Allow Paste prompt. Do not repeat the operation; it may still complete.",
-                mutationStarted: changed, mayHaveCompleted: true, requiresUserAction: true))
+                mutationStarted: changed, mayHaveCompleted: true, requiresUserAction: true), reason: .timeout)
         }
     }
 
@@ -55,14 +73,23 @@ final class NativeClipboardService {
         let request: NativeClipboardRequest
         do { request = try NativeClipboardRequest(method: method, params: params) }
         catch let validation as NativeClipboardValidationError {
+            log(NativeClipboardDiagnostics.message(method: .init(method), stage: .prepare, reason: .invalidParameters))
             completion(nil, Self.failure(validation.reason, "Clipboard parameters must be valid plain text, at most 65536 UTF-8 bytes, without NUL."))
             return
-        } catch { completion(nil, Self.failure("invalid_params", "Invalid clipboard parameters.")); return }
+        } catch {
+            log(NativeClipboardDiagnostics.message(method: .init(method), stage: .prepare, reason: .invalidParameters))
+            completion(nil, Self.failure("invalid_params", "Invalid clipboard parameters.")); return
+        }
         stateLock.lock()
-        guard !busy else { stateLock.unlock(); completion(nil, Self.failure("busy", "Another native clipboard operation is still active. Do not repeat a pending operation.")); return }
+        guard !busy else {
+            stateLock.unlock()
+            log(NativeClipboardDiagnostics.message(method: .init(method), stage: .queued, reason: .busy))
+            completion(nil, Self.failure("busy", "Another native clipboard operation is still active. Do not repeat a pending operation.")); return
+        }
         busy = true
         stateLock.unlock()
-        let operation = Pending(request, authorize: authorize, reply: completion)
+        let operation = Pending(request, authorize: authorize, log: log, reply: completion)
+        log(NativeClipboardDiagnostics.message(method: .init(request.method), stage: .queued, reason: .entered))
         // This timeout does NOT cancel an in-progress UIKit call or release the
         // busy guard. A permission prompt must not cause duplicate writes.
         DispatchQueue.global().asyncAfter(deadline: .now() + 8) { operation.timedOut() }
@@ -70,6 +97,7 @@ final class NativeClipboardService {
     }
 
     private func prepare(_ operation: Pending) {
+        operation.mark(.prepare)
         guard operation.pending else { release(); return }
         if let denied = operation.authorize() { operation.send(nil, denied); release(); return }
         guard !LockStateMonitor.shared().isLocked else {
@@ -88,6 +116,7 @@ final class NativeClipboardService {
         }
         // Metadata lookup is isolated from both main and the serial UI queue.
         // A wedged accessibility connection therefore cannot block HTTP replies.
+        operation.mark(.foregroundLookup)
         navigation.async {
             let original = ForegroundApp.currentBundleID()
             DispatchQueue.main.async {
@@ -97,10 +126,12 @@ final class NativeClipboardService {
                     self.release(); return
                 }
                 operation.originalApp = original
+                operation.mark(.foregroundActivation)
                 guard ForegroundApp.openBundleID(ownID) else {
                     operation.send(nil, Self.failure("foreground_required", "Could not bring the runner to the foreground.", requiresUserAction: true)); self.release(); return
                 }
                 operation.switched = true
+                operation.mark(.foregroundWait)
                 self.waitForForeground(operation, until: Date().addingTimeInterval(2))
             }
         }
@@ -127,6 +158,7 @@ final class NativeClipboardService {
         guard UIApplication.shared.applicationState == .active, !LockStateMonitor.shared().isLocked else {
             finish(operation, value: nil, error: Self.failure("foreground_required", "Runner foreground access was lost; no new clipboard action was started.", requiresUserAction: true)); return
         }
+        operation.mark(.access)
         let board = UIPasteboard.general
         var result: [String: JSONValue] = ["native": .bool(true)]
         switch operation.request.method {
@@ -135,7 +167,7 @@ final class NativeClipboardService {
             // UIPasteboard may wait here for the system paste-permission dialog.
             if board.numberOfItems == 0 {
                 result["text"] = .string(""); result["has_text"] = .bool(false)
-            } else if board.hasStrings, let text = board.string {
+            } else if board.hasStrings, let text = readText(board, operation: operation) {
                 do { try ClipboardTextPolicy.validate(text) }
                 catch {
                     finish(operation, value: nil, error: Self.failure("text_too_large", "Clipboard text exceeds the supported 65536 UTF-8 byte limit or contains NUL.")); return
@@ -160,6 +192,15 @@ final class NativeClipboardService {
         finish(operation, value: result, error: nil)
     }
 
+    private func readText(_ board: UIPasteboard, operation: Pending) -> String? {
+        // Entered immediately before the potentially blocking UIKit accessor.
+        // This is a location diagnostic, not proof that a prompt was displayed.
+        operation.mark(.permissionPending)
+        let text = board.string
+        operation.mark(.access)
+        return text
+    }
+
     private func finish(_ operation: Pending, value: [String: JSONValue]?, error: JSONRPCError?) {
         // Never override a user who already switched away while answering a
         // permission dialog. Only restore if this operation still owns front.
@@ -170,6 +211,7 @@ final class NativeClipboardService {
             if result != nil { result?["restored_app"] = .bool(!operation.switched) }
             operation.send(result, error); release(); return
         }
+        operation.mark(.restore)
         navigation.async {
             var restored = false
             if ForegroundApp.openBundleID(original) {

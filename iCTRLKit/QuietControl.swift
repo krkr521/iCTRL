@@ -19,6 +19,12 @@ final class QuietControl {
     private var restoringUntil: TimeInterval?
     private var launchAttempted = false
     private var beginLaunchNonce: String?
+    private var beginDiagnostic: QuietDiagnostics.BeginDiagnostic?
+    private var beginCallbackClassification: QuietDiagnostics.CallbackClassification?
+    private var beginFocusResult: QuietDiagnostics.FocusResult?
+    private var beginContextDiagnostic: QuietDiagnostics.Reason?
+    private var lastCallbackClassification: QuietDiagnostics.CallbackClassification?
+    private var lastCallbackAction: QuietDiagnostics.Action?
     private(set) var enabled: Bool
     let port: UInt16
 
@@ -81,18 +87,28 @@ final class QuietControl {
     private func expire(_ now: TimeInterval) {
         guard var value = lease else { return }
         if let until = pendingUntil, now >= until {
-            if pendingAction == "begin" { value.noteBeginUncertain() }
+            if pendingAction == "begin" {
+                value.noteBeginUncertain()
+                beginDiagnostic = .callbackWindowElapsed
+            }
             value.failPending(now: now)
             pendingUntil = nil
             pendingAction = nil
         }
         if let until = restoringUntil, now >= until, value.state == .restoring {
+            if value.restoringAction == "begin" {
+                beginDiagnostic = .restoreTimeout
+                beginContextDiagnostic = .foregroundRestoreTimeout
+            }
             value.markRestorationPending()
             restoringUntil = nil
             contextDiagnostic = "foreground_restore_timeout"
         }
         // Any expired lease must stop authorizing UI; gate() also performs this.
         if now >= value.deadline {
+            if value.state == .preparing || (value.state == .restoring && value.restoringAction == "begin") {
+                beginDiagnostic = .leaseExpired
+            }
             if pendingAction == "begin" { value.noteBeginUncertain() }
             _ = value.gate(tokId: value.ownerTokId, session: value.id, now: now)
         }
@@ -164,6 +180,9 @@ final class QuietControl {
         try value.prepareCallback(nonce: nonce, action: "begin", expectedDeadline: deadline, now: now)
         let url = try shortcutURL(name: "iCTRL Quiet Begin", action: "begin", nonce: nonce, deadline: deadline)
         lease = value; wallDeadline = deadline; pendingUntil = now + 30; pendingAction = "begin"; restoringUntil = nil; contextDiagnostic = nil; launchAttempted = false; beginLaunchNonce = nonce
+        beginDiagnostic = .awaitingCallback; beginCallbackClassification = nil; beginFocusResult = nil
+        beginContextDiagnostic = nil
+        lastCallbackClassification = nil; lastCallbackAction = nil
         return Launch(url: url, leaseID: id, deadline: deadline, nonce: nonce, action: "begin")
     }
 
@@ -175,6 +194,12 @@ final class QuietControl {
         if let value = lease, value.ownerTokId == owner, requestedID == nil || requestedID == value.id {
             out["lease_id"] = value.id; out["state"] = value.state.rawValue; out["deadline"] = wallDeadline
             if let contextDiagnostic { out["context_diagnostic"] = contextDiagnostic }
+            if let beginDiagnostic { out["begin_diagnostic"] = beginDiagnostic.rawValue }
+            if let beginCallbackClassification { out["begin_callback_classification"] = beginCallbackClassification.rawValue }
+            if let beginFocusResult { out["begin_focus_result"] = beginFocusResult.rawValue }
+            if let beginContextDiagnostic { out["begin_context_diagnostic"] = beginContextDiagnostic.rawValue }
+            if let lastCallbackClassification { out["last_callback_classification"] = lastCallbackClassification.rawValue }
+            if let lastCallbackAction { out["last_callback_action"] = lastCallbackAction.rawValue }
         }
         return out
     }
@@ -200,6 +225,9 @@ final class QuietControl {
         expire(now)
         guard var value = lease, value.ownerTokId == owner, value.id == id else { throw Failure.forbidden }
         guard value.end(tokId: owner, session: id, now: now) else { lease = value; return nil }
+        if beginDiagnostic == .awaitingCallback || beginDiagnostic == .callbackAccepted {
+            beginDiagnostic = .interrupted
+        }
         let nonce = try Self.random()
         let deadline = wallDeadline ?? ""
         try value.prepareCallback(nonce: nonce, action: "end", expectedDeadline: deadline, now: now)
@@ -232,18 +260,48 @@ final class QuietControl {
     }
 
     @discardableResult func callback(_ report: QuietCallback, now: TimeInterval) -> Bool {
+        classifiedCallback(report, now: now) == .accepted
+    }
+
+    func classifiedCallback(_ report: QuietCallback, now: TimeInterval) -> QuietDiagnostics.CallbackClassification {
         lock.lock(); defer { lock.unlock() }
+        // Classify before expire consumes the pending window. This read does not
+        // admit a callback; the original expire + callback sequence still does.
+        let prior = lease?.callbackClassification(nonce: report.nonce, action: report.action,
+                                                 reportedDeadline: report.deadline, now: now) ?? .noLease
+        let associated = lease?.matchesCallbackNonce(report.nonce) == true || beginLaunchNonce == report.nonce
         expire(now)
-        guard var value = lease else { return false }
+        guard var value = lease else { return .noLease }
         let accepted = value.callback(nonce: report.nonce, action: report.action, observed: report.observed_focus,
                                       reportedDeadline: report.deadline, now: now)
+        let classification: QuietDiagnostics.CallbackClassification = accepted ? .accepted : (prior == .accepted ? .stateMismatch : prior)
+        if associated {
+            lastCallbackClassification = classification
+            lastCallbackAction = QuietDiagnostics.Action(report.action)
+            if report.action == "begin", beginLaunchNonce == report.nonce {
+                beginCallbackClassification = classification
+                if accepted {
+                    beginDiagnostic = .callbackAccepted
+                    beginFocusResult = QuietDiagnostics.FocusResult(report.observed_focus)
+                } else if beginDiagnostic == .awaitingCallback {
+                    beginDiagnostic = .callbackRejected
+                }
+            }
+        }
         if accepted {
             pendingUntil = nil
             pendingAction = nil
             restoringUntil = now + 8
         }
         lease = value
-        return accepted
+        return classification
+    }
+
+    /// Logging snapshot only: no expiry, payload, identity, or owner visibility.
+    func diagnosticState(leaseID: String? = nil) -> QuietLease.State? {
+        lock.lock(); defer { lock.unlock() }
+        guard let lease, leaseID == nil || lease.id == leaseID else { return nil }
+        return lease.state
     }
 
     func restorationForAcceptedCallback(_ report: QuietCallback, now: TimeInterval) -> Restore? {
@@ -266,6 +324,10 @@ final class QuietControl {
         lease = value
         restoringUntil = nil
         contextDiagnostic = succeeded ? nil : (diagnostic ?? "foreground_restore_unconfirmed")
+        if request.action == "begin" {
+            beginDiagnostic = !succeeded ? .restoreUnconfirmed : (value.state == .quietVerified ? .verified : .focusNotDedicated)
+            beginContextDiagnostic = succeeded ? nil : QuietDiagnostics.Reason(context: diagnostic)
+        }
         return true
     }
 
@@ -276,6 +338,10 @@ final class QuietControl {
         value.markRestorationPending()
         lease = value; pendingAction = nil; pendingUntil = nil; restoringUntil = nil
         contextDiagnostic = diagnostic
+        if launch.action == "begin" {
+            beginDiagnostic = .helperLaunchFailed
+            beginContextDiagnostic = QuietDiagnostics.Reason(context: diagnostic)
+        }
     }
 
     /// Only a Begin proved never sent to Shortcuts can release manual UI here.
@@ -288,6 +354,8 @@ final class QuietControl {
         value.endWithoutLaunchingBegin()
         lease = value; pendingAction = nil; pendingUntil = nil; restoringUntil = nil
         contextDiagnostic = diagnostic
+        beginDiagnostic = .helperNotLaunched
+        beginContextDiagnostic = QuietDiagnostics.Reason(context: diagnostic)
         return true
     }
 

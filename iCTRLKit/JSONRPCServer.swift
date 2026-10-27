@@ -56,6 +56,11 @@ class JSONRPCServer {
     func quietMarkLaunchAttempted(_ launch: QuietControl.Launch) -> Bool {
         quietControl.markLaunchAttempted(launch, now: ProcessInfo.processInfo.systemUptime)
     }
+    func quietLog(_ event: QuietDiagnostics.Event, action: String, leaseID: String,
+                  reason: QuietDiagnostics.Reason? = nil) {
+        log(QuietDiagnostics.message(event, action: .init(action),
+            state: quietControl.diagnosticState(leaseID: leaseID), reason: reason))
+    }
     var onStateChange: ((Bool) -> Void)?
     /// Hand off an authorized connection to the video streamer (host owns the
     /// frame grabber + VideoStreamer). The server stops managing this connection
@@ -444,10 +449,16 @@ class JSONRPCServer {
                     lengths.contains(where: { Int($0) == nil || (Int($0) ?? -1) < 0 || (Int($0) ?? 0) > 512 * 1024 }) ||
                     acc.count - header.upperBound > 512 * 1024 ||
                     (quietCallback && (header.upperBound > 4096 || lengths.count != 1 || (Int(lengths[0]) ?? 1025) > 1024)) {
+                    if QuietDiagnostics.isCallbackRequestLine(text) {
+                        self.log(QuietDiagnostics.message(.callback, classification: .framing))
+                    }
                     self.sendHTTPResponse(connection: connection, status: 413, body: "Request too large or unsupported framing")
                     return
                 }
             } else if acc.count > 16 * 1024 {
+                if QuietDiagnostics.isCallbackRequestLine(String(decoding: acc.prefix(512), as: UTF8.self)) {
+                    self.log(QuietDiagnostics.message(.callback, classification: .framing))
+                }
                 self.sendHTTPResponse(connection: connection, status: 413, body: "Headers too large")
                 return
             }
@@ -658,17 +669,26 @@ class JSONRPCServer {
         case ("POST", "/quiet-callback"):
             // Only the on-device Shortcut may report; nonce is in the body, never URL/logs.
             guard query.isEmpty, isLoopback(connection), let body else {
+                log(QuietDiagnostics.message(.callback, classification: .origin))
                 sendHTTPResponse(connection: connection, status: 403, body: "Forbidden"); return
             }
             do {
                 let report = try QuietCallback.parse(method: method, path: pathOnly,
                     contentType: headers["content-type"],
                     headerBytes: headerBytes, body: body)
-                let accepted = quietControl.callback(report, now: ProcessInfo.processInfo.systemUptime)
+                let classification = quietControl.classifiedCallback(report, now: ProcessInfo.processInfo.systemUptime)
+                let accepted = classification == .accepted
+                log(QuietDiagnostics.message(.callback, action: .init(report.action),
+                    classification: classification, focus: QuietDiagnostics.FocusResult(report.observed_focus),
+                    state: quietControl.diagnosticState()))
                 if accepted, let restore = quietControl.restorationForAcceptedCallback(report,
                                              now: ProcessInfo.processInfo.systemUptime) { onQuietRestore?(restore) }
                 sendHTTPResponse(connection: connection, status: accepted ? 204 : 409, body: "")
+            } catch let failure as QuietCallback.ParseFailure {
+                log(QuietDiagnostics.message(.callback, classification: failure.classification))
+                sendHTTPResponse(connection: connection, status: 400, body: "Invalid callback")
             } catch {
+                log(QuietDiagnostics.message(.callback, classification: .jsonShape))
                 sendHTTPResponse(connection: connection, status: 400, body: "Invalid callback")
             }
 
@@ -1252,6 +1272,8 @@ class JSONRPCServer {
                     guard let self else { return }
                     if let end = try? self.quietControl.end(owner: owner, id: launch.leaseID,
                                                            now: ProcessInfo.processInfo.systemUptime) {
+                        self.log(QuietDiagnostics.message(.endRequested, action: .end, source: .ttl,
+                            state: self.quietControl.diagnosticState(leaseID: end.leaseID)))
                         self.onQuietShortcutURL?(end)
                     }
                 }
@@ -1260,6 +1282,8 @@ class JSONRPCServer {
             case "automation_end":
                 guard let id = params["lease_id"]?.stringValue else { return error("lease_id required") }
                 if let launch = try quietControl.end(owner: owner, id: id, now: now) {
+                    log(QuietDiagnostics.message(.endRequested, action: .end, source: .owner,
+                        state: quietControl.diagnosticState(leaseID: launch.leaseID)))
                     onQuietShortcutURL?(launch)
                 }
                 return result(statusValues(id))
@@ -1267,7 +1291,11 @@ class JSONRPCServer {
                 guard params["mode"]?.stringValue == "manual", quietControl.mode(owner: owner) == "manual" else {
                     return error("explicit manual mode required")
                 }
-                if let launch = try quietControl.takeover(now: now) { onQuietShortcutURL?(launch) }
+                if let launch = try quietControl.takeover(now: now) {
+                    log(QuietDiagnostics.message(.endRequested, action: .end, source: .takeover,
+                        state: quietControl.diagnosticState(leaseID: launch.leaseID)))
+                    onQuietShortcutURL?(launch)
+                }
                 let state = quietControl.takeoverState(now: now)
                 return result(["state": .string(state)])
             case "automation_inspect":
