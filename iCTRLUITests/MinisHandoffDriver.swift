@@ -9,7 +9,10 @@ final class MinisHandoffDriver {
     private let authorize: () -> Bool
     private let completion: (MinisHandoffOutcome) -> Void
     private var policy: MinisHandoffPolicy
-    private var bundleID: String?
+    // Minis owns the fixed minis:// route used by this protocol. Its installed
+    // bundle identity is confirmed by device page_source evidence. Installation
+    // enumeration is unavailable on some iOS versions and is not URL admission.
+    private let targetBundleID = "com.openminis.app"
     private var observationInFlight = false
     private var deliveryAccepted = false
     private var timer: DispatchSourceTimer?
@@ -34,21 +37,14 @@ final class MinisHandoffDriver {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isPending(), self.authorize() else { return }
             var blocked = true
-            var matchCount = 0
-            var targetBundle: String?
             let exception = ObjCException.catching {
                 blocked = ActionHandler.springboardHasAlert()
-                guard !blocked else { return }
-                for item in ForegroundApp.installedAppsUserOnly(true) ?? [] where (item["name"] as? String) == "Minis" {
-                    matchCount += 1; targetBundle = item["bundle_id"] as? String
-                }
             }
-            if exception != nil { self.queue.async { self.finish("unavailable") }; return }
-            if blocked { self.queue.async { self.finish("blocked_alert") }; return }
-            guard matchCount == 1, let bundle = targetBundle else {
+            if exception != nil {
+                iCTRLUITests.logBuffer.append("Minis handoff initial_probe_exception")
                 self.queue.async { self.finish("unavailable") }; return
             }
-            self.queue.async { self.bundleID = bundle }
+            if blocked { self.queue.async { self.finish("blocked_alert") }; return }
             guard self.isPending(), self.authorize() else { return }
             self.lifecycleLock.lock(); self.sent = true; self.lifecycleLock.unlock()
             ForegroundApp.openURLOnce(route, authorize: { [weak self] in
@@ -57,7 +53,10 @@ final class MinisHandoffDriver {
                 self?.queue.async {
                     guard let self, self.isPending() else { return }
                     if accepted { self.deliveryAccepted = true }
-                    else { self.finish("unavailable") }
+                    else {
+                        iCTRLUITests.logBuffer.append("Minis handoff url_backend_refused")
+                        self.finish("unavailable")
+                    }
                 }
             })
         }
@@ -70,7 +69,7 @@ final class MinisHandoffDriver {
         if let terminal = policy.terminal(authorized: authorize(), now: ProcessInfo.processInfo.systemUptime) {
             finish(terminal); return
         }
-        guard !observationInFlight, let bundleID else { return }
+        guard !observationInFlight else { return }
         observationInFlight = true
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isPending() else { return }
@@ -78,13 +77,16 @@ final class MinisHandoffDriver {
             var alert = true; var foreground = false
             let exception = ObjCException.catching {
                 alert = ActionHandler.springboardHasAlert()
-                let named = ForegroundApp.processID(forBundleID: bundleID)
+                let named = ForegroundApp.processID(forBundleID: self.targetBundleID)
                 foreground = named > 0 && ForegroundApp.frontmostPID() == named
             }
             self.queue.async {
                 self.observationInFlight = false
                 guard self.isPending() else { return }
-                if exception != nil { self.finish("unavailable"); return }
+                if exception != nil {
+                    iCTRLUITests.logBuffer.append("Minis handoff foreground_probe_exception")
+                    self.finish("unavailable"); return
+                }
                 if let terminal = self.policy.observe(authorized: self.authorize(), now: ProcessInfo.processInfo.systemUptime,
                                                        alert: alert, foreground: self.deliveryAccepted && foreground) { self.finish(terminal) }
             }
@@ -95,6 +97,7 @@ final class MinisHandoffDriver {
         guard !finished else { lifecycleLock.unlock(); return }
         finished = true; let sent = self.sent; lifecycleLock.unlock()
         timer?.cancel(); timer = nil
+        iCTRLUITests.logBuffer.append("Minis handoff terminal=\(state) dispatched=\(sent)")
         completion(.init(state, dispatched: sent, foregroundConfirmed: state == "app_confirmed"))
     }
     deinit { timer?.cancel() }
