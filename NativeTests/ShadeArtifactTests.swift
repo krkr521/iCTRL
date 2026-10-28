@@ -90,4 +90,14 @@ final class ShadeArtifactTests: XCTestCase {
         XCTAssertEqual(result["status"]?.stringValue, "not_regular_file")
         XCTAssertNil(result["data_base64"])
     }
+
+    func testSynthesisImageUsesOnlyRegisteredSystemFrameworkFamily() {
+        XCTAssertNotNil(ShadeArtifactRequest(["artifact": .string("event_synthesis")]))
+        XCTAssertNil(ShadeArtifactRequest(["artifact": .string("event_synthesis"), "path": .string("/private/file")]))
+        XCTAssertTrue(ShadeArtifactReader.allowedSynthesisImage("/Developer/Library/PrivateFrameworks/XCUIAutomation.framework/XCUIAutomation"))
+        XCTAssertTrue(ShadeArtifactReader.allowedSynthesisImage("/System/Developer/Library/PrivateFrameworks/XCTestCore.framework/XCTestCore"))
+        for path in ["/private/var/mobile/XCUIAutomation.framework/XCUIAutomation", "/Developer/LibraryOther/XCUIAutomation.framework/XCUIAutomation", "/Developer/Library/PrivateFrameworks/Other.framework/Other"] {
+            XCTAssertFalse(ShadeArtifactReader.allowedSynthesisImage(path))
+        }
+    }
 }

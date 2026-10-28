@@ -109,3 +109,35 @@ Denied/missing/oversized reads return finite status values; there is no fallback
 path, permission bypass or system write. No binary payload or error description
 is written to the diagnostic log. Extracted Apple binaries are private local
 research artifacts and must not be included in this repository or releases.
+
+Version `1.98.13-krkr.native10` adds a foreground transfer panel with real byte
+progress and separate receiving, verification, waiting-to-save, saving,
+acknowledgement-pending and saved states. Optional `file_list.include_progress`
+exposes explicit queue snapshots while preserving the default ready-only
+contract and existing authenticated claim rules. A full upload does not mean a
+document has been saved.
+
+The Companion verifies an existing receipt's actual document size and hash
+before acknowledging it again. A successfully written document is reused when
+receipt/acknowledgement fails during the current app process; it is not blindly
+downloaded into another numbered copy. Local disk/permission/integrity failures
+show an explicit retry action. A crash between linking a document and persisting
+its receipt still cannot provide an atomic cross-process guarantee.
+
+The Runner reuses its existing notification authorization for generic incoming,
+ready and saved reports, without filenames or hashes. Start and active
+automation notices are passive; ready/saved notices may show a silent banner
+when manual control is ready. Foreground presentation rechecks Quiet state.
+Background presentation ultimately belongs to iOS, so this is not a guarantee
+against every delivery-time race. One fixed notification card is updated only
+on state changes, never for every chunk; tapping opens the Companion. Saved
+notifications still rely on a paired consumer report, not process attestation.
+
+Debug investigation additionally accepts `artifact: event_synthesis`. It
+examines the already-registered `XCSynthesizedEventRecord` class without loading
+a class or opening a session. Only a normalized, symlink-resolved file inside
+the fixed system/developer roots with an exact XCTest framework suffix may be
+read. The original file/chunk bounds remain; there is no memory/shared-cache
+dump, alternate path or permission bypass. A Developer image may have a
+different version from the installed OS. This remains investigation, not an
+implementation of double-tap reveal or system shade control.

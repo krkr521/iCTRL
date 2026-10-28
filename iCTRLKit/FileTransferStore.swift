@@ -124,8 +124,16 @@ final class FileTransferStore {
         }
         if method == "file_list" {
             guard let direction = p["direction"]?.stringValue, ["phone_to_pc", "pc_to_phone"].contains(direction) else { try fail("Specify transfer direction") }
-            let list = items.values.filter { $0.direction == direction && $0.state == "ready" && ($0.leaseExpires < Date() || $0.claimant == owner) }.sorted { $0.created < $1.created }
-            return ["files": .array(list.map { .object(metadata($0)) })]
+            if let value = p["include_progress"], value.boolValue == nil { try fail("include_progress must be boolean") }
+            let progress = p["include_progress"]?.boolValue == true
+            let list = items.values.filter {
+                $0.direction == direction && (progress || ($0.state == "ready" && ($0.leaseExpires < Date() || $0.claimant == owner)))
+            }.sorted { $0.created < $1.created }
+            return ["files": .array(list.map { item in
+                var values = metadata(item)
+                if progress { values["can_receive"] = .bool(item.state == "ready" && (item.leaseExpires < Date() || item.claimant == owner)) }
+                return .object(values)
+            })]
         }
         guard let id = p["id"]?.stringValue, var item = items[id] else { try fail("Transfer unavailable") }
         let owns = item.owner == owner

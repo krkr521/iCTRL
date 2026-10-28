@@ -32,7 +32,7 @@ struct iCTRLApp: App {
             }
             .environmentObject(appState)
             .environmentObject(runnerAdmin)
-            .safeAreaInset(edge: .bottom) { Text(fileReceiver.status).font(.caption).padding(6) }
+            .safeAreaInset(edge: .bottom) { FileTransferStatusView(receiver: fileReceiver) }
             .task(id: scenePhase) {
                 if scenePhase == .active { await fileReceiver.run() }
             }

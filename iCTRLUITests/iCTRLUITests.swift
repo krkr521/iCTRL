@@ -876,8 +876,11 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
             options: []
         )
 
+        let fileCategory = UNNotificationCategory(identifier: FileTransferNotifier.category,
+            actions: [UNNotificationAction(identifier: FileTransferNotifier.openAction,
+                title: "打开 iCTRL", options: [.authenticationRequired])], intentIdentifiers: [], options: [])
         center.setNotificationCategories([authCategory, serverReadyCategory, serverRemoteCategory,
-                                          serverNearbyCategory, serverStoppedCategory, stopConfirmCategory])
+                                          serverNearbyCategory, serverStoppedCategory, stopConfirmCategory, fileCategory])
 
         // Whatever a previous run left in Notification Centre is stale: pairing
         // prompts can no longer be answered (their requests died with that
@@ -904,6 +907,16 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
     ) {
         let actionID = response.actionIdentifier
         let requestID = response.notification.request.identifier
+
+        if response.notification.request.content.categoryIdentifier == FileTransferNotifier.category {
+            if actionID == FileTransferNotifier.openAction || actionID == UNNotificationDefaultActionIdentifier {
+                DispatchQueue.main.async {
+                    if let url = URL(string: "ictrl-app://files") { _ = ForegroundApp.open(url) }
+                    completionHandler()
+                }
+            } else { completionHandler() }
+            return
+        }
 
         // Handle "Copy Logs"
         if actionID == Self.copyLogsActionID {
@@ -991,6 +1004,13 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
+        if notification.request.content.categoryIdentifier == FileTransferNotifier.category {
+            let raw = notification.request.content.userInfo["file_transfer_stage"] as? String
+            let stage = raw.flatMap(FileTransferNotice.Stage.init(rawValue:))
+            let suppressed = server?.suppressFileTransferBanner() ?? true
+            completionHandler(stage.map { FileTransferNotice.permitsBanner(stage: $0, automationActive: suppressed) } == true ? [.list, .banner] : [.list])
+            return
+        }
         completionHandler([.banner, .sound])
     }
 
@@ -1197,6 +1217,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
 
     /// Wire RPC dispatch + public logs onto a server instance.
     private let nativeClipboard = NativeClipboardService(log: { iCTRLUITests.logBuffer.append($0) })
+    private let fileTransferNotifier = FileTransferNotifier()
     /// Accessed only on rpcQueue. Nonces are never logged or persisted.
     private var quietBeginContext: [String: String] = [:]
     private var quietRestoreContext: [String: String] = [:]
@@ -1220,6 +1241,12 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
     }
 
     private func configureServerCallbacks(_ srv: JSONRPCServer) {
+        srv.onFileTransferNotice = { [weak self, weak srv] notice in
+            DispatchQueue.main.async {
+                guard let self, let srv, self.server === srv else { return }
+                self.fileTransferNotifier.post(notice, automationActive: { [weak srv] in srv?.suppressFileTransferBanner() ?? true })
+            }
+        }
         // Advertising can start late (awdl0 appears once Wi-Fi is on), so the
         // status notification follows the advertiser rather than the toggle.
         srv.onNearbyStateChange = { [weak self, weak srv] status in

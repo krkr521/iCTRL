@@ -37,6 +37,10 @@ class JSONRPCServer {
     var onQuietShortcutURL: ((QuietControl.Launch) -> Void)?
     /// Callback is acknowledged promptly; context restoration runs later on the UI lane.
     var onQuietRestore: ((QuietControl.Restore) -> Void)?
+    var onFileTransferNotice: ((FileTransferNotice) -> Void)?
+    func suppressFileTransferBanner() -> Bool {
+        quietControl.takeoverState(now: ProcessInfo.processInfo.systemUptime) != "manual_ready"
+    }
     func quietMayRestore(_ request: QuietControl.Restore) -> Bool {
         quietControl.mayRestore(request, now: ProcessInfo.processInfo.systemUptime)
     }
@@ -1166,6 +1170,10 @@ class JSONRPCServer {
 
         if FileTransferRPCMethods.names.contains(rpcRequest.method) {
             let reply = fileTransfers.call(rpcRequest.method, params: rpcRequest.params ?? [:], owner: opened.tokId)
+            if reply.error == nil, let result = reply.result,
+               let notice = FileTransferNotice.event(method: rpcRequest.method, params: rpcRequest.params ?? [:], result: result) {
+                onFileTransferNotice?(notice)
+            }
             let json = reply.error.map { Self.errorJSON(rpcRequest.id, $0) }
                 ?? Self.resultJSON(rpcRequest.id, reply.result ?? [:])
             sendSealed(connection, seal: seal, json: json)

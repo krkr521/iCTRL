@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(ObjectiveC)
+import ObjectiveC
+#endif
 #if canImport(Darwin)
 import Darwin
 #else
@@ -9,12 +12,14 @@ import Glibc
 struct ShadeArtifactRequest {
     static let maximumFileBytes = 2 * 1024 * 1024
     static let maximumChunkBytes = 48 * 1024
+    let artifact: String
     let offset: Int
     let length: Int
 
     init?(_ params: [String: JSONValue]) {
         guard params.keys.allSatisfy({ ["artifact", "offset", "length"].contains($0) }),
-              params["artifact"]?.stringValue == "automation_ui" else { return nil }
+              let artifact = params["artifact"]?.stringValue,
+              ["automation_ui", "event_synthesis"].contains(artifact) else { return nil }
         var offset = 0, length = 0
         if let value = params["offset"] {
             guard case let .int(number) = value else { return nil }
@@ -26,7 +31,7 @@ struct ShadeArtifactRequest {
         }
         guard offset >= 0, offset <= Self.maximumFileBytes,
               length >= 0, length <= Self.maximumChunkBytes else { return nil }
-        self.offset = offset; self.length = length
+        self.artifact = artifact; self.offset = offset; self.length = length
     }
 }
 
@@ -34,13 +39,41 @@ enum ShadeArtifactReader {
     private static let systemPath = "/System/Library/PrivateFrameworks/AutomationMode.framework/AutomationModeUI.app/AutomationModeUI"
 
     static func read(_ request: ShadeArtifactRequest) -> [String: JSONValue] {
-        read(request, open: { try FileHandle(forReadingFrom: URL(fileURLWithPath: systemPath)) })
+        guard let path = request.artifact == "automation_ui" ? systemPath : registeredSynthesisImage() else {
+            return ["artifact": .string(request.artifact), "status": .string("image_unavailable"),
+                "system_version_description": .string(ProcessInfo.processInfo.operatingSystemVersionString)]
+        }
+        return read(request, open: { try FileHandle(forReadingFrom: URL(fileURLWithPath: path)) })
+    }
+
+    static func allowedSynthesisImage(_ path: String) -> Bool {
+        let roots = ["/Developer/Library/", "/System/Developer/Library/", "/System/Library/PrivateFrameworks/"]
+        let tails = ["/XCUIAutomation.framework/XCUIAutomation", "/XCTestCore.framework/XCTestCore", "/XCTest.framework/XCTest"]
+        return roots.contains(where: { path.hasPrefix($0) }) && tails.contains(where: { path.hasSuffix($0) })
+    }
+
+    private static func registeredSynthesisImage() -> String? {
+        #if canImport(ObjectiveC)
+        var count: UInt32 = 0
+        guard let classes = objc_copyClassList(&count) else { return nil }
+        defer { free(UnsafeMutableRawPointer(classes)) }
+        for index in 0..<Int(count) {
+            let type = classes[index]
+            guard strcmp(class_getName(type), "XCSynthesizedEventRecord") == 0,
+                  let raw = class_getImageName(type), let path = String(validatingUTF8: raw) else { continue }
+            // Inspect registered classes only. Do not resolve/load a class,
+            // instantiate a session, read memory or fall back to shared caches.
+            let resolved = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+            return allowedSynthesisImage(resolved) ? resolved : nil
+        }
+        #endif
+        return nil
     }
 
     /// The injected opener is only for local fixture tests, never an RPC input.
     static func read(_ request: ShadeArtifactRequest, open: () throws -> FileHandle) -> [String: JSONValue] {
         var result: [String: JSONValue] = [
-            "artifact": .string("automation_ui"),
+            "artifact": .string(request.artifact),
             "system_version_description": .string(ProcessInfo.processInfo.operatingSystemVersionString),
         ]
         func failure(_ status: String) -> [String: JSONValue] {

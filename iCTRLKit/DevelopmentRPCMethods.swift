@@ -12,8 +12,8 @@ enum DevelopmentRPCMethods {
         #if DEBUG
         return [RPCMethodDef(
             name: "shade_system_artifact",
-            description: "Debug-only, authenticated and read-only: read the single fixed Apple AutomationModeUI Mach-O through ordinary sandbox access. No arbitrary paths, app files, writes or permission bypass. Metadata only by default; max file2MiB/chunk48KiB. Stop on unavailable/denied/oversize. Binary chunks are for local matching-build investigation, not proof of shade behavior.",
-            params: [RPCParamDef(name: "artifact", type: "string", required: true, description: "Exactly automation_ui; never a path"),
+            description: "Debug-only, authenticated and read-only: read the fixed Apple AutomationModeUI executable or the allowlisted system XCTest image containing the already-registered XCSynthesizedEventRecord class. Ordinary sandbox file access only; no class loading, memory/shared-cache read, arbitrary paths, app data, writes or permission bypass. Metadata by default; max file2MiB/chunk48KiB. Stop on unavailable/denied/oversize; results do not prove shade behavior.",
+            params: [RPCParamDef(name: "artifact", type: "string", required: true, description: "Exactly automation_ui or event_synthesis; never a path"),
                      RPCParamDef(name: "offset", type: "integer", required: false, description: "0..2097152; default0"),
                      RPCParamDef(name: "length", type: "integer", required: false, description: "0(metadata only)..49152; default0")],
             returns: "{artifact,system_version_description,status,size?,offset?,length?,data_base64?,eof?}"
