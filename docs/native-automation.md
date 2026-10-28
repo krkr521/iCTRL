@@ -133,11 +133,16 @@ against every delivery-time race. One fixed notification card is updated only
 on state changes, never for every chunk; tapping opens the Companion. Saved
 notifications still rely on a paired consumer report, not process attestation.
 
-Debug investigation additionally accepts `artifact: event_synthesis`. It
-examines the already-registered `XCSynthesizedEventRecord` class without loading
-a class or opening a session. Only a normalized, symlink-resolved file inside
-the fixed system/developer roots with an exact XCTest framework suffix may be
-read. The original file/chunk bounds remain; there is no memory/shared-cache
-dump, alternate path or permission bypass. A Developer image may have a
-different version from the installed OS. This remains investigation, not an
-implementation of double-tap reveal or system shade control.
+Version `1.98.13-krkr.native11` gives post-activation PID confirmation up to six
+seconds. Activation is still admitted once within two seconds, and every read
+and final commit still checks the original callback window, lease deadline,
+owner and nonce. This addresses an observed End confirmation-read timeout with
+a prior PID mismatch; success on a slow device still requires device testing.
+
+The diagnostic `artifact: event_synthesis` request now returns
+`unavailable` / `diagnostic_disabled` before opening any file. Its former
+`objc_copyClassList` lookup could realize all runtime classes and was too broad
+for a diagnostic. A connection loss occurred during that request, but its
+cause was not confirmed. Offline investigation uses a locally held Developer
+Disk Image instead. The fixed `automation_ui` reader is unchanged. These
+changes do not implement double-tap reveal or control of the system shade.

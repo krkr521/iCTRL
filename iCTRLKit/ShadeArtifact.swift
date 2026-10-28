@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(ObjectiveC)
-import ObjectiveC
-#endif
 #if canImport(Darwin)
 import Darwin
 #else
@@ -39,35 +36,7 @@ enum ShadeArtifactReader {
     private static let systemPath = "/System/Library/PrivateFrameworks/AutomationMode.framework/AutomationModeUI.app/AutomationModeUI"
 
     static func read(_ request: ShadeArtifactRequest) -> [String: JSONValue] {
-        guard let path = request.artifact == "automation_ui" ? systemPath : registeredSynthesisImage() else {
-            return ["artifact": .string(request.artifact), "status": .string("image_unavailable"),
-                "system_version_description": .string(ProcessInfo.processInfo.operatingSystemVersionString)]
-        }
-        return read(request, open: { try FileHandle(forReadingFrom: URL(fileURLWithPath: path)) })
-    }
-
-    static func allowedSynthesisImage(_ path: String) -> Bool {
-        let roots = ["/Developer/Library/", "/System/Developer/Library/", "/System/Library/PrivateFrameworks/"]
-        let tails = ["/XCUIAutomation.framework/XCUIAutomation", "/XCTestCore.framework/XCTestCore", "/XCTest.framework/XCTest"]
-        return roots.contains(where: { path.hasPrefix($0) }) && tails.contains(where: { path.hasSuffix($0) })
-    }
-
-    private static func registeredSynthesisImage() -> String? {
-        #if canImport(ObjectiveC)
-        var count: UInt32 = 0
-        guard let classes = objc_copyClassList(&count) else { return nil }
-        defer { free(UnsafeMutableRawPointer(classes)) }
-        for index in 0..<Int(count) {
-            let type = classes[index]
-            guard strcmp(class_getName(type), "XCSynthesizedEventRecord") == 0,
-                  let raw = class_getImageName(type), let path = String(validatingUTF8: raw) else { continue }
-            // Inspect registered classes only. Do not resolve/load a class,
-            // instantiate a session, read memory or fall back to shared caches.
-            let resolved = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
-            return allowedSynthesisImage(resolved) ? resolved : nil
-        }
-        #endif
-        return nil
+        read(request, open: { try FileHandle(forReadingFrom: URL(fileURLWithPath: systemPath)) })
     }
 
     /// The injected opener is only for local fixture tests, never an RPC input.
@@ -76,6 +45,13 @@ enum ShadeArtifactReader {
             "artifact": .string(request.artifact),
             "system_version_description": .string(ProcessInfo.processInfo.operatingSystemVersionString),
         ]
+        // Retain the request name for compatibility, but do not inspect the
+        // Objective-C runtime or open an image for this disabled diagnostic.
+        guard request.artifact == "automation_ui" else {
+            result["status"] = .string("unavailable")
+            result["reason"] = .string("diagnostic_disabled")
+            return result
+        }
         func failure(_ status: String) -> [String: JSONValue] {
             var failed = result; failed["status"] = .string(status); return failed
         }

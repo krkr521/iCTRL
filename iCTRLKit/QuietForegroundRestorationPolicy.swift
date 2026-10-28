@@ -47,19 +47,22 @@ struct QuietForegroundRestorationPolicy {
     private var previousObservationAt: TimeInterval?
 
     init(startedAt: TimeInterval, actionAdmissionBudget: TimeInterval = 2,
-         confirmationBudget: TimeInterval = 2) {
+         confirmationBudget: TimeInterval = 6) {
         self.startedAt = startedAt
         self.lastNow = startedAt
         self.actionDeadline = startedAt + actionAdmissionBudget
         self.confirmationBudget = confirmationBudget
         self.confirmationStartedAt = startedAt
-        // Neither phase can be enlarged through a caller-provided budget.
+        // Activation is still admitted once within 2s. Fresh PID reads may use
+        // up to 6s: a real End can still show a transition PID after 2s.
+        // The original callback + 8s/TTL/nonce gate can cut this phase shorter;
+        // this local read budget never renews restoration authority.
         if !startedAt.isFinite {
             self.phase = .failed
             self.failure = .invalidClock
         } else if !actionAdmissionBudget.isFinite || !confirmationBudget.isFinite ||
             actionAdmissionBudget <= 0 || actionAdmissionBudget > 2 ||
-            confirmationBudget <= 0 || confirmationBudget > 2 ||
+            confirmationBudget <= 0 || confirmationBudget > 6 ||
             !actionDeadline.isFinite || actionDeadline <= startedAt {
             self.phase = .failed
             self.failure = .invalidBudget

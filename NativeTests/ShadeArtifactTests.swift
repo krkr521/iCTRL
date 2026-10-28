@@ -17,15 +17,19 @@ final class ShadeArtifactTests: XCTestCase {
     private let image = Data([0xcf, 0xfa, 0xed, 0xfe, 1, 2, 3, 4, 5, 6])
 
     func testRejectsPathSubstitutionAndInvalidRangesBeforeOpening() {
-        let variants: [[String: JSONValue]] = [
-            [:], ["artifact": .string("/private/file")],
-            ["artifact": .string("automation_ui"), "path": .string("/private/file")],
-            ["artifact": .string("automation_ui"), "offset": .int(-1)],
-            ["artifact": .string("automation_ui"), "offset": .int(2 * 1024 * 1024 + 1)],
-            ["artifact": .string("automation_ui"), "length": .int(48 * 1024 + 1)],
-            ["artifact": .string("automation_ui"), "length": .bool(true)],
-        ]
-        for params in variants { XCTAssertNil(ShadeArtifactRequest(params)) }
+        XCTAssertNil(ShadeArtifactRequest([:]))
+        XCTAssertNil(ShadeArtifactRequest(["artifact": .string("/private/file")]))
+        for artifact in ["automation_ui", "event_synthesis"] {
+            let variants: [[String: JSONValue]] = [
+                ["artifact": .string(artifact), "path": .string("/private/file")],
+                ["artifact": .string(artifact), "offset": .int(-1)],
+                ["artifact": .string(artifact), "offset": .int(2 * 1024 * 1024 + 1)],
+                ["artifact": .string(artifact), "length": .int(48 * 1024 + 1)],
+                ["artifact": .string(artifact), "length": .bool(true)],
+                ["artifact": .string(artifact), "offset": .double(1.5)],
+            ]
+            for params in variants { XCTAssertNil(ShadeArtifactRequest(params)) }
+        }
     }
 
     func testMetadataDefaultDoesNotReturnBinaryPayload() throws {
@@ -91,13 +95,21 @@ final class ShadeArtifactTests: XCTestCase {
         XCTAssertNil(result["data_base64"])
     }
 
-    func testSynthesisImageUsesOnlyRegisteredSystemFrameworkFamily() {
-        XCTAssertNotNil(ShadeArtifactRequest(["artifact": .string("event_synthesis")]))
-        XCTAssertNil(ShadeArtifactRequest(["artifact": .string("event_synthesis"), "path": .string("/private/file")]))
-        XCTAssertTrue(ShadeArtifactReader.allowedSynthesisImage("/Developer/Library/PrivateFrameworks/XCUIAutomation.framework/XCUIAutomation"))
-        XCTAssertTrue(ShadeArtifactReader.allowedSynthesisImage("/System/Developer/Library/PrivateFrameworks/XCTestCore.framework/XCTestCore"))
-        for path in ["/private/var/mobile/XCUIAutomation.framework/XCUIAutomation", "/Developer/LibraryOther/XCUIAutomation.framework/XCUIAutomation", "/Developer/Library/PrivateFrameworks/Other.framework/Other"] {
-            XCTAssertFalse(ShadeArtifactReader.allowedSynthesisImage(path))
+    func testEventSynthesisIsDisabledBeforeOpeningForMetadataAndChunks() throws {
+        for (offset, length) in [(0, 0), (4, 3), (ShadeArtifactRequest.maximumFileBytes, ShadeArtifactRequest.maximumChunkBytes)] {
+            let request = try XCTUnwrap(ShadeArtifactRequest(["artifact": .string("event_synthesis"),
+                "offset": .int(offset), "length": .int(length)]))
+            var opened = false
+            let injected = ShadeArtifactReader.read(request, open: {
+                opened = true
+                throw NSError(domain: "disabled-diagnostic-must-not-open", code: 1)
+            })
+            XCTAssertFalse(opened)
+            XCTAssertEqual(injected["status"]?.stringValue, "unavailable")
+            XCTAssertEqual(injected["reason"]?.stringValue, "diagnostic_disabled")
+            XCTAssertEqual(Set(injected.keys), Set(["artifact", "system_version_description", "status", "reason"]))
+            // Cover the production entry point as well as the fixture opener.
+            XCTAssertEqual(ShadeArtifactReader.read(request), injected)
         }
     }
 }
