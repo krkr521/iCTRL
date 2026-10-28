@@ -49,6 +49,12 @@ struct SettingsView: View {
     /// App Store, so the fallback is its distribution site.
     private static let stikDebugSiteURL = URL(string: "https://stikdebug.xyz")!
 
+    private static var bundleVersion: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+        return "\(version) (\(build))"
+    }
+
     var body: some View {
         List {
             requirementsSection
@@ -95,7 +101,7 @@ struct SettingsView: View {
 
             serverSection
             Section {
-                Toggle("自动操控时抑制通知（需专用捷径）", isOn: Binding(
+                Toggle("旧版 Quiet 通知抑制（可选，需专用捷径）", isOn: Binding(
                     get: { runnerAdmin.quietEnabled ?? false },
                     set: { value in Task { await runnerAdmin.setQuiet(value) } }
                 ))
@@ -105,7 +111,7 @@ struct SettingsView: View {
                     Text(notice).foregroundColor(.orange).font(.footnote)
                 }
             } footer: {
-                Text("Default off. Configure and verify the iCTRL Automation Focus plus both Quiet Shortcuts first. The switch only enables the lease gate; automation waits for a matching Focus callback before any UI input. Manual web control uses its own paired token and never starts Focus.")
+                Text("此开关仅供旧版 Quiet 会话与恢复使用；需先配置并验证专用 Focus 和两条 Quiet 捷径。新版原生自动化不依赖此开关，不切换 Focus，也不承诺抑制所有系统通知。")
             }
             Section {
                 Toggle("Keep awake while iCTRL is foreground", isOn: $keepAwakeWhileServing)
@@ -113,7 +119,7 @@ struct SettingsView: View {
                     Task { _ = await StartupCoordinator.shared.prepare(keepAwake: keepAwakeWhileServing); await runner.check() }
                 }
             } footer: {
-                Text("Prepare applies this setting to Runner too. It applies only while iCTRL or Runner is foreground and serving. To prevent Auto-Lock while controlling other apps, keep Settings → Display & Brightness → Auto-Lock set to Never. This cannot bypass a locked screen.")
+                Text("此开关仅在 iCTRL 或 Runner 位于前台且服务运行时保持屏幕常亮，Prepare 会同步此设置。新版跨 App 自动化由有时限、需心跳的原生会话通过 F13 保活，无需改系统自动锁定；结束、失联或锁屏后停止。此开关不能代替原生会话，也不能解锁手机。")
             }
 
             deviceSection
@@ -122,7 +128,7 @@ struct SettingsView: View {
                 HStack {
                     Text(L10n.t(.versionLabel))
                     Spacer()
-                    Text("1.0.0")
+                    Text(Self.bundleVersion)
                         .foregroundColor(.secondary)
                 }
                 HStack {

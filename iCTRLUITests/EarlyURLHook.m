@@ -9,6 +9,7 @@
 //
 
 #import <Foundation/Foundation.h>
+#import "ICFileNotificationBootstrap.h"
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>   // CACurrentMediaTime
 #import <objc/runtime.h>
@@ -122,6 +123,7 @@ static void stashURL(NSURL *url) {
 // own boot logic still runs. If there was no original (we added, not exchanged),
 // the tmp selector won't respond and we just return YES.
 static BOOL hookedDidFinishLaunching(id self, SEL _cmd, id application, NSDictionary *options) {
+    [ICFileNotificationBootstrap install];
     NSURL *url = options[UIApplicationLaunchOptionsURLKey];
     earlyLog([NSString stringWithFormat:@"🔎 didFinishLaunching fired; launchURL=%@; optionKeys=%@",
               url ? url.absoluteString : @"(none)", options.allKeys]);

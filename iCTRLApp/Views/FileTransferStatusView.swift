@@ -3,7 +3,7 @@ import SwiftUI
 @MainActor
 struct FileTransferStatusView: View {
     @ObservedObject var receiver: CompanionFileReceiver
-    @State private var showTransfers = false
+    private var hasFiles: Bool { !receiver.transfers.isEmpty || !receiver.localSavedFiles.isEmpty }
     private var current: FileTransferProgress? {
         receiver.transfers.last(where: { $0.isActive }) ?? receiver.transfers.last(where: { $0.stage == .failed }) ?? receiver.transfers.last
     }
@@ -13,25 +13,54 @@ struct FileTransferStatusView: View {
                 Label(receiver.status, systemImage: "arrow.down.doc").font(.caption)
                 Spacer(minLength: 4)
                 if !receiver.failedIDs.isEmpty { Button("重试") { receiver.retryFailed() }.font(.caption) }
-                if !receiver.transfers.isEmpty {
-                    Button("查看文件") { showTransfers = true }.font(.caption)
+                if hasFiles {
+                    Button("查看文件") { receiver.showTransfers = true }.font(.caption)
                 }
             }
             if let row = current { transferRow(row) }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(.ultraThinMaterial)
-        .sheet(isPresented: $showTransfers) {
+        .sheet(isPresented: $receiver.showTransfers, onDismiss: { receiver.closeDocument() }) {
             NavigationStack {
-                List {
-                    ForEach(receiver.transfers) { row in transferRow(row).padding(.vertical, 4) }
-                    Section {
-                        Text("保存后的文件位于「文件 → 我的 iPhone → iCTRL」。接收和保存期间请保持 iCTRL 在前台。")
-                            .font(.footnote).foregroundStyle(.secondary)
+                Group {
+                    if let document = receiver.openedDocument {
+                        TransferDocumentView(url: document)
+                    } else {
+                        List {
+                            if let message = receiver.openMessage {
+                                Section { Text(message).font(.callout) }
+                            }
+                            ForEach(receiver.transfers) { row in
+                                VStack(alignment: .leading) {
+                                    transferRow(row).padding(.vertical, 4)
+                                    if row.stage == .saved {
+                                        Button("查看或分享") { receiver.requestOpen(id: row.id) }
+                                    }
+                                }
+                            }
+                            let visible = Set(receiver.transfers.map(\.id))
+                            ForEach(receiver.localSavedFiles.filter { !visible.contains($0.id) }, id: \.id) { record in
+                                Button { receiver.requestOpen(id: record.id) } label: {
+                                    Label(record.name, systemImage: "doc")
+                                }
+                            }
+                            Section {
+                                Text("点按已保存的文件可查看或分享。IPA 等文件可能无法预览，请使用分享菜单选择支持的 App；是否显示 SideStore 由其文件类型支持决定。原文件仍位于「文件 → 我的 iPhone → iCTRL」。")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
-                .navigationTitle("文件传输")
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showTransfers = false } } }
+                .navigationTitle(receiver.openedDocument == nil ? "文件传输" : "所选文件")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        if receiver.openedDocument != nil || receiver.openMessage != nil {
+                            Button("返回列表") { receiver.closeDocument() }
+                        }
+                    }
+                    ToolbarItem(placement: .confirmationAction) { Button("完成") { receiver.showTransfers = false } }
+                }
             }
         }
     }

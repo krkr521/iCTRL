@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct iCTRLApp: App {
+    @UIApplicationDelegateAdaptor(TransferNotificationDelegate.self) private var transferNotifications
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var fileReceiver = CompanionFileReceiver()
     @StateObject private var appState = AppState()
@@ -42,7 +43,13 @@ struct iCTRLApp: App {
             }
             // A pairing file shared to iCTRL from another app (Files, Mail,
             // AirDrop, a chat): validate, store, and say so either way.
+            .onReceive(transferNotifications.$selectedID) { id in
+                guard let id else { return }
+                transferNotifications.consume()
+                fileReceiver.requestOpen(id: id)
+            }
             .onOpenURL { url in
+                if let id = TransferFileRoute.parse(url) { fileReceiver.requestOpen(id: id); return }
                 guard url.isFileURL else { StartupCoordinator.shared.receive(url); return }
                 let name = url.lastPathComponent
                 do {

@@ -8,6 +8,117 @@ final class CompanionFileReceiver: ObservableObject {
     @Published private(set) var status = "等待电脑传入文件"
     @Published private(set) var transfers: [FileTransferProgress] = []
     @Published private(set) var failedIDs: Set<String> = []
+    @Published var showTransfers = false
+    @Published private(set) var openedDocument: URL?
+    @Published private(set) var openMessage: String?
+    private var requestedID: String?
+    private var resolving = false
+    private var openGeneration = 0
+    @Published private var savedDocuments: [String: SavedTransferDocument] = [:]
+    private var savedOrder: [String] = []
+    var localSavedFiles: [SavedTransferDocument] {
+        savedOrder.reversed().compactMap { savedDocuments[$0] }
+    }
+    private static var receiveDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("TransferReceive", isDirectory: true)
+    }
+    private static var previewDirectory: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("TransferPreviews", isDirectory: true)
+    }
+    init() {
+        // Receipts are our own verified save records. Legacy string-only receipts
+        // remain available for save retry, but are never enough to open a file.
+        let files = (try? FileManager.default.contentsOfDirectory(at: Self.receiveDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        for url in files.sorted(by: {
+            let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return a < b
+        }).suffix(FileTransferStore.maxMetadata) {
+            guard url.pathExtension == "json", TransferFileRoute.validID(url.deletingPathExtension().lastPathComponent),
+                  let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  attributes[.type] as? FileAttributeType == .typeRegular,
+                  let data = try? Data(contentsOf: url),
+                  let record = try? JSONDecoder().decode(SavedTransferDocument.self, from: data), record.isValid,
+                  record.id == url.deletingPathExtension().lastPathComponent else { continue }
+            savedDocuments[record.id] = record; savedOrder.append(record.id)
+        }
+        try? FileManager.default.removeItem(at: Self.previewDirectory)
+    }
+
+    func requestOpen(id: String) {
+        guard TransferFileRoute.validID(id) else { return }
+        showTransfers = true; openedDocument = nil; requestedID = id; openGeneration += 1
+        openMessage = "正在定位所选文件…"
+        Task { await resolveRequestedFile() }
+    }
+    func closeDocument() {
+        openGeneration += 1; requestedID = nil; openedDocument = nil; openMessage = nil
+        try? FileManager.default.removeItem(at: Self.previewDirectory)
+    }
+    private func resolveRequestedFile(finalizeUnknown: Bool = false) async {
+        guard let id = requestedID, !resolving else { return }
+        resolving = true; defer { resolving = false }
+        let generation = openGeneration
+        guard let record = savedDocuments[id] else {
+            if let row = transfers.first(where: { $0.id == id }) {
+                if row.stage == .failed || row.stage == .savedElsewhere || row.stage == .saved {
+                    openMessage = "此文件未在本机完成保存。请查看传输状态或重新传入。"
+                    requestedID = nil
+                } else { openMessage = "正在完成所选文件的接收和保存，请保持 iCTRL 在前台。" }
+            } else if finalizeUnknown {
+                openMessage = "找不到所选文件的保存记录。文件可能已过期、被删除，或尚未传入本机。"
+                requestedID = nil
+            }
+            return
+        }
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        guard let source = record.documentURL(in: documents) else {
+            openMessage = "所选文件不可用，未打开其他文件。"; requestedID = nil; return
+        }
+        let snapshot = Self.previewDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do {
+            guard try await verifiedDocument(record.name, size: record.size, hash: record.sha256, documents: documents) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            guard generation == openGeneration, requestedID == id else { return }
+            try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+            let target = snapshot.appendingPathComponent(record.name)
+            try await Task.detached(priority: .userInitiated) {
+                try FileManager.default.copyItem(at: source, to: target)
+            }.value
+            guard try await verifiedDocument(record.name, size: record.size, hash: record.sha256, documents: snapshot) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            guard generation == openGeneration, requestedID == id else {
+                try? FileManager.default.removeItem(at: snapshot); return
+            }
+            // Preview/share an immutable private copy verified after copying.
+            openedDocument = target; openMessage = nil; requestedID = nil
+        } catch {
+            try? FileManager.default.removeItem(at: snapshot)
+            guard generation == openGeneration else { return }
+            openMessage = "所选文件已删除、被修改或暂时无法读取。未打开其他文件，请重新传入或检查「文件」。"
+            requestedID = nil
+        }
+    }
+    private func recordSaved(id: String, name: String, size: Int, hash: String, receipt: URL) async throws {
+        let record = SavedTransferDocument(id: id, name: name, size: size, sha256: hash)
+        guard record.isValid else { throw CocoaError(.fileReadCorruptFile) }
+        try JSONEncoder().encode(record).write(to: receipt, options: .atomic)
+        if savedDocuments[id] == nil { savedOrder.append(id) }
+        savedDocuments[id] = record
+        while savedOrder.count > FileTransferStore.maxMetadata {
+            let old = savedOrder.removeFirst(); savedDocuments.removeValue(forKey: old)
+            // Prune only our completed receipt, never the user's document.
+            try? FileManager.default.removeItem(at: Self.receiveDirectory.appendingPathComponent(old + ".json"))
+        }
+        TransferNotificationDelegate.postSaved(id: id)
+        await resolveRequestedFile()
+    }
+
     private var client = RunnerClient(port: 8200)
     private var running = false
     private var writtenNames: [String: String] = [:]
@@ -54,6 +165,13 @@ final class CompanionFileReceiver: ObservableObject {
                     try await save(item)
                     savingID = nil
                 }
+                // A lost file_saved reply may leave the old name-only retry
+                // receipt although the server already accepted it. Recover only
+                // from authenticated metadata plus a fresh local content check.
+                for item in items where item["state"] as? String == "saved" {
+                    try await recoverSavedReceipt(item)
+                }
+                await resolveRequestedFile(finalizeUnknown: true)
             } catch is CancellationError { return }
             catch {
                 if let id = savingID {
@@ -75,7 +193,10 @@ final class CompanionFileReceiver: ObservableObject {
                             status = "文件写入失败，请检查存储空间或访问权限"
                         } else { status = "文件接收失败，请检查服务连接" }
                     }
-                } else { status = "暂时无法连接 iCTRL 服务" }
+                } else {
+                    status = "暂时无法连接 iCTRL 服务"
+                    if requestedID != nil { openMessage = "暂时无法连接服务以完成保存。请保持 iCTRL 在前台后重试。" }
+                }
             }
             do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
         }
@@ -109,6 +230,21 @@ final class CompanionFileReceiver: ObservableObject {
         return count == size && digest.finalize().map { String(format: "%02x", $0) }.joined() == hash
     }
 
+    private func recoverSavedReceipt(_ item: [String: Any]) async throws {
+        guard let id = item["id"] as? String, TransferFileRoute.validID(id), savedDocuments[id] == nil,
+              item["receipt_source"] as? String == "companion_client_report",
+              let name = item["saved_name"] as? String,
+              let size = item["size"] as? Int, let hash = item["sha256"] as? String else { return }
+        let record = SavedTransferDocument(id: id, name: name, size: size, sha256: hash)
+        guard record.isValid else { return }
+        let receipt = Self.receiveDirectory.appendingPathComponent(id + ".json")
+        guard let data = try? Data(contentsOf: receipt),
+              (try? JSONDecoder().decode(String.self, from: data)) == name else { return }
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        guard try await verifiedDocument(name, size: size, hash: hash, documents: documents) else { return }
+        try await recordSaved(id: id, name: name, size: size, hash: hash, receipt: receipt)
+    }
+
     private func save(_ item: [String: Any]) async throws {
         guard let id = item["id"] as? String, UUID(uuidString: id) != nil,
               let rawName = item["name"] as? String,
@@ -125,7 +261,10 @@ final class CompanionFileReceiver: ObservableObject {
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
         let receipt = support.appendingPathComponent(id + ".json")
-        let cached = (try? Data(contentsOf: receipt)).flatMap { try? JSONDecoder().decode(String.self, from: $0) }
+        let cached = (try? Data(contentsOf: receipt)).flatMap { data in
+            (try? JSONDecoder().decode(String.self, from: data))
+                ?? (try? JSONDecoder().decode(SavedTransferDocument.self, from: data))?.name
+        }
         if let name = writtenNames[id] ?? cached,
            try await verifiedDocument(name, size: size, hash: expected, documents: documents) {
             writtenNames[id] = name
@@ -136,6 +275,7 @@ final class CompanionFileReceiver: ObservableObject {
             writtenNames.removeValue(forKey: id)
             update(id, stage: .saved, completed: size, name: name)
             status = "已保存到「文件 → 我的 iPhone → iCTRL」"
+            try await recordSaved(id: id, name: name, size: size, hash: expected, receipt: receipt)
             return
         }
         writtenNames.removeValue(forKey: id)
@@ -177,5 +317,6 @@ final class CompanionFileReceiver: ObservableObject {
         writtenNames.removeValue(forKey: id)
         update(id, stage: .saved, completed: size)
         status = "已保存到「文件 → 我的 iPhone → iCTRL」"
+        try await recordSaved(id: id, name: saved.lastPathComponent, size: size, hash: expected, receipt: receipt)
     }
 }

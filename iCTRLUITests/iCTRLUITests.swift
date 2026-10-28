@@ -882,7 +882,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
 
         let fileCategory = UNNotificationCategory(identifier: FileTransferNotifier.category,
             actions: [UNNotificationAction(identifier: FileTransferNotifier.openAction,
-                title: "打开 iCTRL", options: [.authenticationRequired])], intentIdentifiers: [], options: [])
+                title: "查看文件", options: [.authenticationRequired, .foreground])], intentIdentifiers: [], options: [])
         center.setNotificationCategories([authCategory, serverReadyCategory, serverRemoteCategory,
                                           serverNearbyCategory, serverStoppedCategory, stopConfirmCategory, fileCategory])
 
@@ -913,9 +913,12 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
         let requestID = response.notification.request.identifier
 
         if response.notification.request.content.categoryIdentifier == FileTransferNotifier.category {
-            if actionID == FileTransferNotifier.openAction || actionID == UNNotificationDefaultActionIdentifier {
+            let id = TransferFileRoute.selectedID(category: response.notification.request.content.categoryIdentifier,
+                action: actionID, defaultAction: UNNotificationDefaultActionIdentifier,
+                payloadID: response.notification.request.content.userInfo[TransferFileRoute.idKey] as? String)
+            if let id, let url = TransferFileRoute.url(id: id) {
                 DispatchQueue.main.async {
-                    if let url = URL(string: "ictrl-app://files") { _ = ForegroundApp.open(url) }
+                    _ = ForegroundApp.open(url)
                     completionHandler()
                 }
             } else { completionHandler() }
