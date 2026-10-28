@@ -6,6 +6,7 @@ struct MinisHandoffPolicy {
     private(set) var dispatched = false
     private var foregroundSamples = 0
     private var lastNow: TimeInterval?
+    init(deadline: TimeInterval) { self.deadline = deadline }
     mutating func admitDispatch(authorized: Bool, now: TimeInterval) -> Bool {
         guard !dispatched, terminal(authorized: authorized, now: now) == nil else { return false }
         dispatched = true; return true
