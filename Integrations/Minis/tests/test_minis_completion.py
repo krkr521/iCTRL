@@ -97,7 +97,7 @@ class CompletionTests(unittest.TestCase):
         def managed(*a):yield types.SimpleNamespace(restore_status="not_required")
         def raw(method,params):
             events.append((method,params))
-            if method=="automation_native_capabilities":return {"minis_atomic_finish":1}
+            if method=="automation_native_capabilities":return {"minis_atomic_finish":1,"minis_handoff":1}
             return {"service_finish":"closing","return_route":"dispatched","chat_verified":False}
         with tempfile.TemporaryDirectory() as td:
             base=Path(td);task="a"*32;d=base/task;d.mkdir()
@@ -157,7 +157,7 @@ class CompletionTests(unittest.TestCase):
             sent.append((method,m.transport_budget(method,holder["session"],False,clock=lambda:105)))
             return {"backend":"native","mode":"automation","state":"ended","lease_id":"a"*32,"deadline":"1970-01-01T00:00:00Z","service_finish":"closing","return_route":"skipped_stay","chat_verified":False}
         t=m.MinisFinishTransport(raw,m.completion_options("stay"));s=m.MinisAutomationSession(t);holder["session"]=s;s.lease_id="a"*32;s.local_deadline=100
-        s._cleanup();self.assertEqual(sent,[("automation_native_finish",5.0)]);self.assertIsNone(s.lease_id)
+        s._cleanup();self.assertEqual(sent,[("automation_native_finish",15.0)]);self.assertIsNone(s.lease_id)
 
     def test_unsettled_heartbeat_join_uses_one_owner_finish_without_return_ui(self):
         sent=[]
@@ -178,3 +178,21 @@ class CompletionTests(unittest.TestCase):
             with self.assertRaises(type(failure)):s._cleanup()
             with self.assertRaises(Exception):t("automation_native_end",{"lease_id":"a"*32})
             self.assertEqual(sent,["automation_native_finish"]);self.assertIsNone(s.lease_id)
+
+    def test_return_chat_requires_handoff_capability_before_begin(self):
+        calls=[]
+        def raw(method,params):calls.append(method);return {"minis_atomic_finish":1}
+        t=m.MinisFinishTransport(raw,m.completion_options("return_chat","origin_A"))
+        with self.assertRaisesRegex(Exception,"handoff requires"):t("automation_native_capabilities",{})
+        self.assertEqual(calls,["automation_native_capabilities"])
+
+    def test_failed_handoff_does_not_report_full_completion_even_when_control_ended(self):
+        @contextlib.contextmanager
+        def lock(base):yield
+        with tempfile.TemporaryDirectory() as td:
+            base=Path(td);d=base/("a"*32);d.mkdir();m.atomic(base/"active","a"*32)
+            for state,confirmed in [("timeout",False),("blocked_alert",False),("app_confirmed",True)]:
+                status={"status":"complete","restore":"not_required","return_to_chat":{"policy":"return_chat","handoff_state":state,"foreground_confirmed":confirmed}}
+                with mock.patch.object(m,"locked",lock),mock.patch.object(m,"public_status",return_value=status):result=m.finish(base,"a"*32,0)
+                self.assertTrue(result["control_end_confirmed"]);self.assertEqual(result["completion_confirmed"],confirmed)
+                self.assertEqual(result["handoff_confirmed"],confirmed)

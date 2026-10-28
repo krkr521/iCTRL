@@ -180,6 +180,9 @@ class MinisFinishTransport:
             if type(value.get("minis_atomic_finish")) is not int or value["minis_atomic_finish"] != 1:
                 from automation_session import AutomationUnavailable
                 raise AutomationUnavailable("Minis atomic finish requires updated Runner")
+            if self.completion.get("policy") == "return_chat" and (type(value.get("minis_handoff")) is not int or value["minis_handoff"] != 1):
+                from automation_session import AutomationUnavailable
+                raise AutomationUnavailable("verified Minis handoff requires updated Runner")
             return value
         if method != "automation_native_end": return self.raw(method, params)
         policy = "skip_unknown" if self.suppress_return else self.completion["policy"]
@@ -196,7 +199,8 @@ class MinisFinishTransport:
             raise RestorationUncertain("Minis service finish not acknowledged; do not replay")
         self.receipt = {"service_finish": "closing", "return_route": value.get("return_route", "unavailable"),
                         "chat_verified": value.get("chat_verified") is True,
-                        "policy": policy}
+                        "policy": policy, "handoff_state":value.get("handoff_state", "unavailable"),
+                        "foreground_confirmed":value.get("foreground_confirmed") is True}
         return value
 
 
@@ -269,7 +273,8 @@ def start(base, task_id, store_key, client_path=None, ttl_seconds=240, *, comple
 
 
 def transport_budget(method, session, body, clock=time.monotonic, not_after=None):
-    if method in {"automation_end", "automation_status", "automation_owner_status", "automation_native_end", "automation_native_finish", "automation_native_status"} and not body: return 5.0
+    if method in {"automation_end", "automation_status", "automation_owner_status", "automation_native_end", "automation_native_status"} and not body: return 5.0
+    if method == "automation_native_finish" and not body: return 15.0
     if session is None or not session.local_deadline: return 5.0
     deadline = session.local_deadline - (75 if body else 0)
     if body and not_after is not None: deadline = min(deadline, not_after)
@@ -486,9 +491,14 @@ def finish(base, task_id, wait=30, *, clock=time.monotonic, sleep=time.sleep):
         sleep(min(.1, max(0, deadline - clock())))
         with locked(base):
             state = public_status(directory)
-    return {"task_id": task_id, **state,
+    result = {"task_id": task_id, **state,
             "control_end_confirmed": state["status"] == "complete" and state.get("restore") in
                 {"restored", "already_never", "user_value_preserved", "no_record", "not_required"}}
+    route = state.get("return_to_chat", {})
+    policy = route.get("policy")
+    result["handoff_confirmed"] = bool(policy == "return_chat" and route.get("handoff_state") == "app_confirmed" and route.get("foreground_confirmed") is True)
+    result["completion_confirmed"] = result["control_end_confirmed"] and (policy != "return_chat" or result["handoff_confirmed"])
+    return result
 
 
 def main(argv=None):
@@ -521,7 +531,7 @@ def main(argv=None):
                 out = {"task_id":task, **public_status(directory)}
         if args.action == "start": out = wait_ready(base, args.task_id, args.wait_ready)
         print(json.dumps(out, ensure_ascii=False))
-        if args.action == "finish" and not out["control_end_confirmed"]: return 2
+        if args.action == "finish" and not out["completion_confirmed"]: return 2
         if args.action == "start" and out["status"] not in {"running", "complete"}: return 2
         return 0
     except Exception as error:

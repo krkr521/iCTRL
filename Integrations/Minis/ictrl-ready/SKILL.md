@@ -31,7 +31,7 @@ python3 -B "$HOME/.ictrl/runtime/quiet_batch.py" /path/read.json --store-key 'de
 
 整批只读才会执行，不调用 Begin/End，不进入设置。`config` 只有空参数算只读；未知方法、管理 RPC 或混入点击会在任何 RPC 前拒绝。需要页面结果时必须指定全新私有结果文件并读取它，stdout 不是页面正文。旧 `quiet_batch.py` 的 UI 入口已停用，出现 `ui_requires_task_session` 时改用以下任务流程，不能换文件名重试旧 UI 批次。
 
-## 默认收尾规则（协议 native15-minis-atomic-v1）
+## 默认收尾规则（协议 native16-minis-handoff-v1）
 
 用户已明确：Minis 任务结束后退出 Automation Running/停止 iCTRL 服务与F13；Codex 远控保留服务。两者策略不同，不能修改全局保活开关代替任务收尾。普通任务默认返回**发起这次任务的具体聊天**，再结束控制并停止服务；只有用户明确要求打开某App或停留某页面，才选择 `--completion stay`，但仍必须结束控制并停服。
 
@@ -68,7 +68,7 @@ python3 -B "$HOME/.ictrl/runtime/task_session.py" finish --task-id TASK_ID --wai
 python3 -B "$HOME/.ictrl/runtime/task_session.py" status --task-id TASK_ID
 ```
 
-`finish --wait 30` 在不占任务锁时有界等待，超时/不确定退出非零；不要因此重发动作。`stop_requested` 或 `stopping` 不是恢复完成。先确认 `control_end_confirmed:true`；只有 `complete` 且 `restore` 为 `restored`、`already_never`、`user_value_preserved`、`no_record` 或 `not_required` 才算控制租约已确认结束。还要分别读取 `return_to_chat`：`return_route:dispatched` 仅为指定聊天路由已排队，`chat_verified:false` 不等于工具看到了正确聊天；`service_finish:closing` 是服务端接受停服并同步撤销保活授权，不冒充已观察到进程消失。答复时按实际字段说明，不把 `restore:not_required` 当作回聊天证明。`unknown/pending` 保留原记录，停止 UI，不重新 Begin、不自动 inspect、不杀 Runner。旧 Quiet 回执不明时保留 pending，按原有明确恢复流程处理，不能直接开启新版会话掩盖记录。
+`finish --wait 30` 在不占任务锁时有界等待，超时/不确定退出非零；不要因此重发动作。`stop_requested` 或 `stopping` 不是恢复完成。先确认 `control_end_confirmed:true`；只有 `complete` 且 `restore` 为 `restored`、`already_never`、`user_value_preserved`、`no_record` 或 `not_required` 才算控制租约已确认结束。还要分别读取 `return_to_chat`：普通返聊在 Begin 前要求认证能力 `minis_handoff:1`；finish 使用独立15秒通信预算，服务端最多8秒且不超过原租约TTL/heartbeat进行单次受限跳转观察，然后End/停服务。`handoff_state:app_confirmed` 与 `foreground_confirmed:true` 仅证目标Minis前台，不单独证明准确聊天；`chat_verified:false`仍须如实保留。blocked_alert/timeout/unavailable/cancelled 不能报告返聊完成，控制结束与返聊分别报告，不重发finish。`return_route:dispatched` 仅为指定聊天路由已排队，`chat_verified:false` 不等于工具看到了正确聊天；`service_finish:closing` 是服务端接受停服并同步撤销保活授权，不冒充已观察到进程消失。答复时按实际字段说明，不把 `restore:not_required` 当作回聊天证明。`unknown/pending` 保留原记录，停止 UI，不重新 Begin、不自动 inspect、不杀 Runner。旧 Quiet 回执不明时保留 pending，按原有明确恢复流程处理，不能直接开启新版会话掩盖记录。
 
 ## 时间、恢复与能力边界
 
@@ -90,4 +90,4 @@ Native14 的已知能力契约为 `keep_awake:f13_service`、`keep_awake_scope:r
 本技能依赖认证的minis_atomic_finish:1；Native14仅具原End，不具Minis原子停服事务。以本次真实能力读回决定是否可执行，不能把技能文件已安装当作Runner已升级或真机验收成功。Minis原生停止按钮与worker取消事件仍未证明联动；进程挂起/崩溃边界需独立证据，不因技能文字改变而标成功。
 
 
-更新技能后旧聊天可能仍持有旧版已读上下文。验收要使用新聊天，或在实际tool记录中确认重新file_read了包含协议标记native15-minis-atomic-v1的当前文件，并核对部署hash；仅替换磁盘文件不算真实Agent已使用新流程。
+更新技能后旧聊天可能仍持有旧版已读上下文。验收要使用新聊天，或在实际tool记录中确认重新file_read了包含协议标记native16-minis-handoff-v1的当前文件，并核对部署hash；仅替换磁盘文件不算真实Agent已使用新流程。

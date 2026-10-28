@@ -22,3 +22,5 @@ New tasks require the trusted originating Minis session ID (canonical `minis://s
 Current candidate is local only, not deployed. Native stop-button cancellation, suspended/killed workers and physical device acceptance retain their explicit verification boundary. Historical tasks and audits are preserved.
 
 Automatic origin uses two completed tool rounds: first prepare+ensure (random IDs persisted), then start resolves the prior successful prepare receipt through globally unique nonce matching. The current shell input is not assumed persisted while executing. `start --wait-ready 20` polls only local state, reducing avoidable model/tool round trips. See docs/minis-origin-context.md.
+
+Native16 normal return requires authenticated `minis_handoff:1` before Begin. Its one-shot finish transport has a separate 15-second budget; the original lease bounds the server handoff to at most eight seconds. `app_confirmed` plus `foreground_confirmed:true` proves the target app was observed, not the exact chat UUID. Unknown alerts are blocked, not automatically approved. Terminal failures still clean up the captured lease/service when authority has not been superseded.

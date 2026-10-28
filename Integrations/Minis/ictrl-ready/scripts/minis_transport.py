@@ -78,7 +78,7 @@ def load_transport(store_key, client_path=None, timeout_budget=None):
 
     def raw(method, params):
         # UI/AX operations can legitimately take longer than a status read.
-        timeout = 5 if method.startswith("automation_") or method in {
+        timeout = 15 if method == "automation_native_finish" else 5 if method.startswith("automation_") or method in {
             "device_info", "is_locked", "logs", "recent_logs", "config"
         } else 60
         if timeout_budget is not None:
