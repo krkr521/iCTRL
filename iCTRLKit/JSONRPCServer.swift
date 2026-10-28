@@ -5,6 +5,11 @@ import Network
 class JSONRPCServer {
     private let fileTransfers = FileTransferStore()
     private let nativeSession = NativeAutomationSession()
+    /// One-shot runner cleanup, independent of the Minis caller after ACK.
+    var onNativeFinish: ((URL?, @escaping () -> Void) -> Void)?
+    private var nativeFinishStarted = false
+    private var nativeFinishStopped = false
+    var isNativeFinishing: Bool { nativeSession.isFinishing }
     private let serviceKeepAwake = ServiceKeepAwakeAuthorization()
     // Lifecycle state + callbacks stay ordered even when stop is called off the listener queue.
     private let serviceStateLock = NSRecursiveLock()
@@ -110,6 +115,7 @@ class JSONRPCServer {
     /// Second gate, called just before queued Runner UI execution.
     func quietGateForDequeued(owner: String, method: String, session: String?) -> JSONRPCError? {
         guard QuietRPCMethodDefinitions.requiresUIGate(method) else { return nil }
+        guard !nativeSession.isFinishing else { return .serverError("native_service_closing") }
         let now = ProcessInfo.processInfo.systemUptime
         if nativeSession.active(now: now) != nil {
             return nativeControlAdmission(owner: owner, id: session, now: now).map(JSONRPCError.serverError)
@@ -1255,6 +1261,18 @@ class JSONRPCServer {
             return
         }
 
+        if rpcRequest.method == "automation_native_finish" {
+            handleNativeFinish(rpcRequest, owner: opened.tokId, connection: connection, seal: seal)
+            return
+        }
+        if nativeSession.isFinishing {
+            let allowed: Set<String> = ["automation_native_capabilities", "automation_native_status", "automation_owner_status", "automation_native_end"]
+            if (rpcRequest.method.hasPrefix("automation_") && !allowed.contains(rpcRequest.method)) ||
+                (rpcRequest.method == "config" && !(rpcRequest.params ?? [:]).isEmpty) {
+                sendSealed(connection, seal: seal, json: Self.errorJSON(rpcRequest.id, .serverError("native_service_closing")))
+                return
+            }
+        }
         if rpcRequest.method.hasPrefix("automation_") {
             let response = handleQuietRPC(rpcRequest, owner: opened.tokId, local: isLoopback(connection))
             sendSealed(connection, seal: seal, json: response)
@@ -1302,6 +1320,52 @@ class JSONRPCServer {
         }
     }
 
+    private func handleNativeFinish(_ request: JSONRPCRequest, owner: String,
+                                    connection: NWConnection, seal: (String) -> String) {
+        guard let finish = NativeFinishRequest(params: request.params ?? [:]) else {
+            sendSealed(connection, seal: seal, json: Self.errorJSON(request.id, .invalidParams)); return
+        }
+        do {
+            serviceStateLock.lock()
+            let outcome: (values: [String: JSONValue], first: Bool)
+            do {
+                outcome = try nativeSession.finish(owner: owner, request: finish, now: ProcessInfo.processInfo.systemUptime)
+                serviceKeepAwake.stop() // synchronous admission closure, before the receipt
+            } catch { serviceStateLock.unlock(); throw error }
+            serviceStateLock.unlock()
+            var values = outcome.values
+            values["service_finish"] = .string("closing")
+            values["chat_verified"] = .bool(false)
+            let route = finish.policy == "stay" ? "skipped_stay" : finish.policy == "skip_unknown" ? "skipped_unknown" : onNativeFinish == nil ? "unavailable" : "dispatched"
+            values["return_route"] = .string(route)
+            values["completion_policy"] = .string(finish.policy)
+            // Sending completion and fallback race into one one-shot cleanup. A
+            // caller suspension, network loss or duplicate finish cannot lose stop.
+            let cleanup = { [self] in self.executeNativeFinish(route: finish.returnURL) }
+            sendSealed(connection, seal: seal, json: Self.resultJSON(request.id, values), completion: cleanup)
+            if outcome.first { queue.asyncAfter(deadline: .now() + 0.5, execute: cleanup) }
+        } catch {
+            sendSealed(connection, seal: seal, json: Self.errorJSON(request.id, .serverError("native_finish_owner_or_request_mismatch")))
+        }
+    }
+
+    private func executeNativeFinish(route: URL?) {
+        serviceStateLock.lock()
+        guard !nativeFinishStarted else { serviceStateLock.unlock(); return }
+        nativeFinishStarted = true
+        serviceStateLock.unlock()
+        let stopCaptured = { [self] in
+            self.serviceStateLock.lock(); defer { self.serviceStateLock.unlock() }
+            guard !self.nativeFinishStopped else { return }
+            self.nativeFinishStopped = true
+            self.stop() // this exact instance, never the Runner's replaceable server
+        }
+        // Independent queue fallback still stops the listener if the UI queue is wedged.
+        queue.asyncAfter(deadline: .now() + 3, execute: stopCaptured)
+        if let callback = onNativeFinish { callback(route, stopCaptured) }
+        else { stopCaptured() }
+    }
+
     private func handleQuietRPC(_ request: JSONRPCRequest, owner: String, local: Bool) -> String {
         let method = request.method
         let params = request.params ?? [:]
@@ -1317,7 +1381,7 @@ class JSONRPCServer {
             case "automation_native_capabilities":
                 let readiness = nativeDeviceReadiness()
                 var values = readiness.diagnostics
-                values.merge(["native_automation_session": .int(1),
+                values.merge(["native_automation_session": .int(1), "minis_atomic_finish": .int(onNativeFinish == nil ? 0 : 1),
                     "available": .bool(readiness.ready && serviceKeepAwake.source(lockGeneration: readiness.lockGeneration) != nil),
                     "keep_awake": .string("f13_service"), "keep_awake_scope": .string("runner_service"),
                     "keep_awake_interval_seconds": .int(10), "ui_control_scope": .string("owner_lease"), "interruption_policy": .string("explicit_alerts_only"),
@@ -1462,9 +1526,9 @@ class JSONRPCServer {
     /// Encrypt a JSON-RPC reply into a response envelope and write it out.
     /// Always HTTP 200: transport succeeded, and the real status is inside the
     /// sealed body (an eavesdropper shouldn't learn outcomes from status codes).
-    private func sendSealed(_ connection: NWConnection, seal: (String) -> String, json: String) {
+    private func sendSealed(_ connection: NWConnection, seal: (String) -> String, json: String, completion: (() -> Void)? = nil) {
         sendHTTPResponse(connection: connection, status: 200,
-                         contentType: "application/json", body: seal(json))
+                         contentType: "application/json", body: seal(json), completion: completion)
     }
 
     /// Auth failures are sent in the CLEAR — the client has no usable key yet
@@ -1571,7 +1635,7 @@ class JSONRPCServer {
     }
 
     private func sendHTTPResponse(connection: NWConnection, status: Int, headers: [String: String] = [:],
-                                  contentType: String = "text/plain", body: String, cors: Bool = true) {
+                                  contentType: String = "text/plain", body: String, cors: Bool = true, completion: (() -> Void)? = nil) {
         let statusText: String
         switch status {
         case 200: statusText = "OK"
@@ -1610,6 +1674,7 @@ class JSONRPCServer {
 
         connection.send(content: responseData, completion: .contentProcessed { _ in
             connection.cancel()
+            completion?()
         })
     }
 

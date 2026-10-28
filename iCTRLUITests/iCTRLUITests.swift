@@ -1457,6 +1457,21 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 }
             }
         }
+        srv.onNativeFinish = { [weak self, weak srv] route, complete in
+            let deadline = ProcessInfo.processInfo.systemUptime + 2
+            // Use the ordinary serial action lane; never race an in-flight gesture.
+            self?.rpcQueue.async {
+                DispatchQueue.main.async {
+                    guard let self, let srv, self.server === srv, srv.isRunning,
+                          ProcessInfo.processInfo.systemUptime < deadline else { complete(); return }
+                    guard let route else { complete(); return }
+                    UIApplication.shared.open(route, options: [:]) { opened in
+                        Self.logBuffer.append(opened ? "Minis finish return URL accepted (chat unverified)" : "Minis finish return URL failed")
+                        complete()
+                    }
+                }
+            }
+        }
         let lockMonitor = LockStateMonitor.shared()
         lockMonitor.onLocked = { [weak srv] generation in srv?.revokeNativeSession(beforeLockGeneration: generation) }
         // Runtime ABI metadata is inspected once on main, before the HTTP listener
@@ -1589,7 +1604,8 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                     } else if method == "runtime_status" {
                         result = (self.runtimeStatus(), nil)
                     } else if method == "config" {
-                        result = self.handleConfig(params)
+                        if srv.isNativeFinishing, params?.keys.contains(where: { $0 != JSONRPCServer.peerSourceParam }) == true { result = (nil, .serverError("native_service_closing")) }
+                        else { result = self.handleConfig(params) }
                     } else if let handler = self.actionHandler {
                         let reason = ObjCException.catching {
                             if srv.nativeKeepAwakeLease() != nil,
@@ -1778,8 +1794,9 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
         // persist, so a later relaunch doesn't require re-authorization.
         if params?["stop_server"]?.boolValue == true {
             Self.logBuffer.append("🛑 Stop requested via config — shutting down after reply")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-                guard let self = self else { return }
+            let expectedServer = server
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self, weak expectedServer] in
+                guard let self, let expectedServer, self.server === expectedServer, !expectedServer.isNativeFinishing else { return }
                 Self.logBuffer.append("🛑 Stopping server and ending test (config stop_server)")
                 self.server?.onStateChange = nil
                 self.server?.stop()
@@ -1843,8 +1860,9 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
             // After the reply: stopping the listener now would also close the
             // connection this reply has yet to go out on.
             let port = newPort
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                guard let self = self else { return }
+            let expectedServer = server
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self, weak expectedServer] in
+                guard let self, let expectedServer, self.server === expectedServer, !expectedServer.isNativeFinishing else { return }
                 self.server?.onStateChange = nil
                 self.server?.stop()
                 let newServer = JSONRPCServer(port: port, localOnly: !self.remoteAccessEnabled)
