@@ -9,6 +9,7 @@
 #import "QuiescenceDisabler.h"
 #import "ObjCException.h"
 #import "ICShadeProbe.h"
+#import "ICIdlePulse.h"
 
 @interface EarlyURLHook : NSObject
 + (NSArray<NSURL *> *)drainURLs;
