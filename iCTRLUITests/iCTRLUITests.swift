@@ -353,8 +353,8 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
         // shows up (XCTest tears the test down → server stops).
         Self.logBuffer.append("🚪 tearDownWithError — test ending, stopping server. keepRunning=\(keepRunning)")
         LockStateMonitor.shared().onLocked = nil
-        leaseKeepAwake?.stop()
-        leaseKeepAwake = nil
+        serviceKeepAwake?.stop()
+        serviceKeepAwake = nil
         server?.stop()
         server = nil
         actionHandler = nil
@@ -1104,7 +1104,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
     /// XCUITest call can't freeze the network listener (which would drop the whole
     /// service). Serial so actions still run one-at-a-time in order.
     private let rpcQueue = DispatchQueue(label: "com.openminis.ictrl.rpc")
-    private var leaseKeepAwake: LeaseKeepAwake?
+    private var serviceKeepAwake: ServiceKeepAwake?
 
     /// Consecutive UI-method timeouts. Reset by any UI method that completes.
     private var uiTimeoutStreak = 0
@@ -1238,6 +1238,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
         result.merge(metadata) { _, fresh in fresh }
         let expiry = ProvisioningExpiry.currentISO8601()
         result["server_running"] = .bool(server?.isRunning ?? false)
+        if let server { result.merge(server.serviceKeepAwakeStatus()) { _, new in new } }
         result["server_version"] = .string(RPCMethodRegistry.serverVersion)
         result["system_version_description"] = .string(ProcessInfo.processInfo.operatingSystemVersionString)
         result["ddi_mounted"] = .bool(DeveloperDiskImage.status().isMounted)
@@ -1457,19 +1458,35 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
             }
         }
         let lockMonitor = LockStateMonitor.shared()
-        lockMonitor.onLocked = { [weak srv] in srv?.revokeNativeSession() }
-        srv.nativeInterruptionGuardAvailable = NativeInterruptionGuard.available && ICIdlePulse.isAvailable() && lockMonitor.monitorAvailable
-        srv.nativeDeviceReady = { lockMonitor.monitorAvailable && ICIdlePulse.isAvailable() && !ICIdlePulse.isLockedOrUnknown() }
-        leaseKeepAwake?.stop()
-        let keepAwake = LeaseKeepAwake(queue: rpcQueue, snapshot: { [weak self, weak srv] in
-            guard let self, let srv, self.server === srv, let lease = srv.nativeKeepAwakeLease() else { return nil }
-            return LeaseKeepAwakePolicy.Lease(id: lease.id, deadline: min(lease.deadline, lease.heartbeat))
-        }, isLocked: { ICIdlePulse.isLockedOrUnknown() }, pulse: { [weak srv] in
-            let error = ICIdlePulse.sendF13()
-            if error != nil { srv?.revokeNativeSession() }
+        lockMonitor.onLocked = { [weak srv] generation in srv?.revokeNativeSession(beforeLockGeneration: generation) }
+        // Runtime ABI metadata is inspected once on main, before the HTTP listener
+        // starts. Per-request readiness does not call XCUIDevice from a server queue.
+        let preflight = { (NativeInterruptionGuard.available, ICIdlePulse.isAvailable()) }
+        let capability = Thread.isMainThread ? preflight() : DispatchQueue.main.sync(execute: preflight)
+        srv.nativeDeviceReadiness = {
+            let health = lockMonitor.refreshHealth()
+            return NativeDeviceReadiness(interruptionGuardAvailable: capability.0, f13Available: capability.1,
+                monitorRegistered: health["registered"]?.boolValue ?? false,
+                stateKnown: health["state_known"]?.boolValue ?? false,
+                locked: health["locked"]?.boolValue ?? true,
+                lockGeneration: health["generation"]?.uint64Value ?? 0)
+        }
+        serviceKeepAwake?.stop()
+        let keepAwake = ServiceKeepAwake(queue: rpcQueue, snapshot: { [weak self, weak srv] in
+            guard let self, let srv, self.server === srv else { return nil }
+            return srv.serviceKeepAwakeSource()
+        }, pulse: { [weak self, weak srv] source in
+            guard let self, let srv, self.server === srv, srv.serviceKeepAwakeSource() == source else { return "not_admitted" }
+            let affectedLease = srv.nativeKeepAwakeLease()?.id
+            let error = ICIdlePulse.sendF13(authorize: { srv.serviceKeepAwakeSource() == source })
+            if error != nil {
+                srv.serviceKeepAwakeFailed(source)
+                // Do not let a delayed old event revoke a newly created lease.
+                if let affectedLease { srv.revokeNativeSession(id: affectedLease) }
+            }
             return error
         }, log: { Self.logBuffer.append($0) })
-        leaseKeepAwake = keepAwake
+        serviceKeepAwake = keepAwake
         keepAwake.start()
         srv.onRPCRequest = { [weak self, weak srv] method, params, owner, completion in
             guard let self = self, let srv = srv else {

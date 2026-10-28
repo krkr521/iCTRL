@@ -2,7 +2,7 @@ import Foundation
 
 /// Local, process-only ownership. No Focus, Shortcuts, Auto-Lock, or shared device settings.
 final class NativeAutomationSession {
-    struct Lease { let owner: String; let id: String; let deadline: TimeInterval; let wallDeadline: String; var heartbeat: TimeInterval; var state = "active" }
+    struct Lease { let owner: String; let id: String; let deadline: TimeInterval; let wallDeadline: String; let lockGeneration: UInt64; var heartbeat: TimeInterval; var state = "active" }
     private let lock = NSLock()
     private var lease: Lease?
     private func expire(_ now: TimeInterval) {
@@ -11,12 +11,12 @@ final class NativeAutomationSession {
             value.state = "expired"; lease = value
         }
     }
-    func begin(owner: String, id: String, ttl: Int, now: TimeInterval, date: Date) throws -> [String: JSONValue] {
+    func begin(owner: String, id: String, ttl: Int, now: TimeInterval, date: Date, lockGeneration: UInt64 = 0) throws -> [String: JSONValue] {
         lock.lock(); defer { lock.unlock() }; expire(now)
         guard now.isFinite, !owner.isEmpty, !id.isEmpty, (1...300).contains(ttl) else { throw Failure.invalid }
         guard lease?.state != "active" else { throw Failure.busy }
         lease = Lease(owner: owner, id: id, deadline: now + Double(ttl),
-                      wallDeadline: ISO8601DateFormatter().string(from: date.addingTimeInterval(Double(ttl))), heartbeat: now + 15)
+                      wallDeadline: ISO8601DateFormatter().string(from: date.addingTimeInterval(Double(ttl))), lockGeneration: lockGeneration, heartbeat: now + 15)
         return values(lease!)
     }
     func status(owner: String, id: String? = nil, now: TimeInterval) -> [String: JSONValue]? {
@@ -35,9 +35,23 @@ final class NativeAutomationSession {
         value.state = "ended"; lease = value; return values(value)
     }
     func revoke() { lock.lock(); defer { lock.unlock() }; if lease != nil { lease!.state = "ended" } }
+    func revoke(id: String) {
+        lock.lock(); defer { lock.unlock() }
+        if lease?.id == id { lease?.state = "ended" }
+    }
+    /// A delayed invalidation must not revoke a newer Begin from a recovered epoch.
+    func revoke(beforeLockGeneration generation: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        if let value = lease, value.lockGeneration < generation { lease?.state = "ended" }
+    }
     func active(now: TimeInterval) -> Lease? {
         lock.lock(); defer { lock.unlock() }; expire(now)
         return lease?.state == "active" ? lease : nil
+    }
+    func authorizedLease(owner: String, id: String?, now: TimeInterval) -> Lease? {
+        lock.lock(); defer { lock.unlock() }; expire(now)
+        guard let value = lease, value.owner == owner, value.id == id, value.state == "active" else { return nil }
+        return value
     }
     func gate(owner: String, id: String?, now: TimeInterval) -> Bool {
         lock.lock(); defer { lock.unlock() }; expire(now)

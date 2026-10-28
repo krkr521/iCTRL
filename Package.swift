@@ -6,12 +6,13 @@ let package = Package(
     name: "iCTRLNativePolicy",
     platforms: [.macOS(.v12)],
     targets: [
+        .target(name: "NativeLockHealth", path: "iCTRLCompat/LockHealth", publicHeadersPath: "include"),
         .target(name: "NativePolicy", path: "iCTRLKit", sources: [
             "RPCCoreTypes.swift", "ClipboardTextPolicy.swift", "ProvisioningExpiry.swift",
             "StartupURLRequest.swift", "RenewalGate.swift", "RenewalReceiptStore.swift", "CompanionRuntimeMetadata.swift", "RunnerProfileMetadata.swift", "NativeRPCMethodDefinitions.swift",
             "RPCMethod.swift", "BuildStamp.swift", "FileTransferRPCMethods.swift", "FileTransferStore.swift", "FileTransferProgress.swift", "TransferFileRoute.swift", "DevelopmentRPCMethods.swift",
-            "NativeAutomationSession.swift", "LeaseKeepAwakePolicy.swift", "QuietLease.swift", "QuietCallback.swift", "QuietControl.swift", "QuietModeStore.swift", "QuietRPCMethodDefinitions.swift", "QuietDiagnostics.swift", "QuietForegroundRestorationPolicy.swift", "ShadeArtifact.swift"
+            "NativeDeviceReadiness.swift", "NativeAutomationSession.swift", "ServiceKeepAwakePolicy.swift", "QuietLease.swift", "QuietCallback.swift", "QuietControl.swift", "QuietModeStore.swift", "QuietRPCMethodDefinitions.swift", "QuietDiagnostics.swift", "QuietForegroundRestorationPolicy.swift", "ShadeArtifact.swift"
         ]),
-        .testTarget(name: "NativePolicyTests", dependencies: ["NativePolicy"], path: "NativeTests")
+        .testTarget(name: "NativePolicyTests", dependencies: ["NativePolicy", "NativeLockHealth"], path: "NativeTests")
     ]
 )

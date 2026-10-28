@@ -5,8 +5,11 @@ import Network
 class JSONRPCServer {
     private let fileTransfers = FileTransferStore()
     private let nativeSession = NativeAutomationSession()
-    var nativeInterruptionGuardAvailable = false
-    var nativeDeviceReady: () -> Bool = { false }
+    private let serviceKeepAwake = ServiceKeepAwakeAuthorization()
+    // Lifecycle state + callbacks stay ordered even when stop is called off the listener queue.
+    private let serviceStateLock = NSRecursiveLock()
+    /// Closure refreshes the existing Darwin token only; never performs UIKit/XCTest.
+    var nativeDeviceReadiness: () -> NativeDeviceReadiness = { .unavailable }
     private let quietControl: QuietControl
     private var listener: NWListener?
     private var connections: [NWConnection] = []
@@ -109,9 +112,7 @@ class JSONRPCServer {
         guard QuietRPCMethodDefinitions.requiresUIGate(method) else { return nil }
         let now = ProcessInfo.processInfo.systemUptime
         if nativeSession.active(now: now) != nil {
-            guard nativeDeviceReady(), quietControl.mode(owner: owner) == "automation",
-                  quietControl.takeoverState(now: now) == "manual_ready" else { nativeSession.revoke(); return .serverError("native_device_locked_or_unavailable") }
-            return nativeSession.gate(owner: owner, id: session, now: now) ? nil : .serverError("native_session_owned_or_expired")
+            return nativeControlAdmission(owner: owner, id: session, now: now).map(JSONRPCError.serverError)
         }
         if nativeSession.status(owner: owner, id: session, now: now) != nil, session != nil {
             return .serverError("native_session_not_active")
@@ -120,19 +121,50 @@ class JSONRPCServer {
                                  now: ProcessInfo.processInfo.systemUptime).map(JSONRPCError.serverError)
     }
 
+    private func nativeControlAdmission(owner: String, id: String?, now: TimeInterval) -> String? {
+        NativeControlAdmission.error(sessions: nativeSession, owner: owner, id: id, now: now,
+            readiness: nativeDeviceReadiness, mode: { self.quietControl.mode(owner: $0) },
+            legacyReady: { self.quietControl.takeoverState(now: now) == "manual_ready" },
+            serviceReady: { self.serviceKeepAwake.source(lockGeneration: $0) != nil })
+    }
+
     func revokeNativeSession() { nativeSession.revoke() }
+    func revokeNativeSession(id: String) { nativeSession.revoke(id: id) }
+    func revokeNativeSession(beforeLockGeneration generation: UInt64) {
+        nativeSession.revoke(beforeLockGeneration: generation)
+    }
 
     func nativeKeepAwakeLease() -> NativeAutomationSession.Lease? {
         guard let lease = nativeSession.active(now: ProcessInfo.processInfo.systemUptime) else { return nil }
-        guard nativeDeviceReady(), quietControl.mode(owner: lease.owner) == "automation",
+        let readiness = nativeDeviceReadiness()
+        guard readiness.ready, serviceKeepAwake.source(lockGeneration: readiness.lockGeneration) != nil,
+              lease.lockGeneration == readiness.lockGeneration,
+              quietControl.mode(owner: lease.owner) == "automation",
               quietControl.takeoverState(now: ProcessInfo.processInfo.systemUptime) == "manual_ready" else {
-            nativeSession.revoke(); return nil
+            nativeSession.revoke(id: lease.id); return nil
         }
         return lease
     }
 
+
+    func serviceKeepAwakeSource() -> ServiceKeepAwakePolicy.Source? {
+        guard serviceKeepAwake.isRunning else { return nil }
+        let readiness = nativeDeviceReadiness()
+        guard readiness.ready else { return nil }
+        return serviceKeepAwake.source(lockGeneration: readiness.lockGeneration)
+    }
+    func serviceKeepAwakeFailed(_ source: ServiceKeepAwakePolicy.Source) { serviceKeepAwake.failed(source) }
+    func serviceKeepAwakeStatus() -> [String: JSONValue] {
+        let readiness = nativeDeviceReadiness()
+        return ["service_keep_awake_scope": .string("runner_service"),
+                "service_keep_awake_running": .bool(serviceKeepAwake.isRunning),
+                "service_keep_awake_state": .string(serviceKeepAwake.state(readiness: readiness)),
+                "native_control_lease_active": .bool(nativeSession.active(now: ProcessInfo.processInfo.systemUptime) != nil)]
+    }
+
     func start() throws {
-        guard !isRunning else { return }
+        serviceStateLock.lock(); defer { serviceStateLock.unlock() }
+        guard listener == nil, !isRunning else { return }
 
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
@@ -148,20 +180,33 @@ class JSONRPCServer {
         } else {
             listener = try NWListener(using: params, on: nwPort)
         }
+        guard let serviceTicket = serviceKeepAwake.prepareStart() else {
+            throw NSError(domain: "JSONRPCServer", code: 2, userInfo: [NSLocalizedDescriptionKey: "Service epoch exhausted"])
+        }
         self.listener = listener
 
         listener.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
             switch state {
             case .ready:
+                self.serviceStateLock.lock(); defer { self.serviceStateLock.unlock() }
+                guard self.serviceKeepAwake.ready(ticket: serviceTicket) else { return }
                 self.isRunning = true
                 self.onStateChange?(true)
                 self.log("🟢 iCTRL server ready on port \(self.port)")
             case .failed(let error):
+                self.serviceStateLock.lock(); defer { self.serviceStateLock.unlock() }
+                guard self.serviceKeepAwake.stop(ticket: serviceTicket) else { return }
+                self.nativeSession.revoke()
+                self.listener = nil
                 self.log("🔴 Server failed: \(error)")
                 self.isRunning = false
                 self.onStateChange?(false)
             case .cancelled:
+                self.serviceStateLock.lock(); defer { self.serviceStateLock.unlock() }
+                guard self.serviceKeepAwake.stop(ticket: serviceTicket) else { return }
+                self.nativeSession.revoke()
+                self.listener = nil
                 self.isRunning = false
                 self.onStateChange?(false)
                 self.log("⚪️ NWListener cancelled")
@@ -192,6 +237,8 @@ class JSONRPCServer {
     }
 
     func stop() {
+        serviceStateLock.lock(); defer { serviceStateLock.unlock() }
+        serviceKeepAwake.stop() // synchronous: queued pulses and late .ready can no longer authorize
         nativeSession.revoke()
         log("🔻 JSONRPCServer.stop called")
         // Nearby teardown belongs on the server queue, where that state lives.
@@ -210,6 +257,9 @@ class JSONRPCServer {
         listener?.cancel()
         listener = nil
         isRunning = false
+        // Cancelled callbacks are stale after the synchronous epoch stop above.
+        // Deliver false here so UIKit's foreground idle assertion is released too.
+        onStateChange?(false)
         log("🔴 iCTRL server stopped")
     }
 
@@ -1264,19 +1314,50 @@ class JSONRPCServer {
         do {
             switch method {
             case "automation_native_capabilities":
-                return result(["native_automation_session": .int(1), "available": .bool(nativeInterruptionGuardAvailable),
-                               "keep_awake": .string("f13_lease"), "interruption_policy": .string("explicit_alerts_only"),
-                               "notification_suppression": .bool(false)])
+                let readiness = nativeDeviceReadiness()
+                var values = readiness.diagnostics
+                values.merge(["native_automation_session": .int(1),
+                    "available": .bool(readiness.ready && serviceKeepAwake.source(lockGeneration: readiness.lockGeneration) != nil),
+                    "keep_awake": .string("f13_service"), "keep_awake_scope": .string("runner_service"),
+                    "keep_awake_interval_seconds": .int(10), "ui_control_scope": .string("owner_lease"), "interruption_policy": .string("explicit_alerts_only"),
+                    "notification_suppression": .bool(false)]) { _, new in new }
+                values["keep_awake_service_state"] = .string(serviceKeepAwake.state(readiness: readiness))
+                if readiness.ready, !serviceKeepAwake.isRunning { values["admission_reason"] = .string("native_service_not_running") }
+                else if readiness.ready, serviceKeepAwake.state(readiness: readiness) == "event_failed" {
+                    values["admission_reason"] = .string("native_service_keep_awake_event_failed")
+                }
+                values["legacy_recovery_required"] = .bool(quietControl.takeoverState(now: now) != "manual_ready")
+                return result(values)
             case "automation_native_begin":
-                guard nativeInterruptionGuardAvailable, nativeDeviceReady(), quietControl.mode(owner: owner) == "automation",
-                      quietControl.takeoverState(now: now) == "manual_ready",
-                      case .int(let ttl)? = params["ttl_seconds"] else { return error("native_unavailable_or_legacy_recovery_required") }
-                return result(try nativeSession.begin(owner: owner, id: UUID().uuidString, ttl: ttl, now: now, date: Date()))
+                let readiness = nativeDeviceReadiness()
+                if let reason = readiness.reason { return error(reason.rawValue) }
+                guard serviceKeepAwake.isRunning else { return error("native_service_not_running") }
+                guard serviceKeepAwake.source(lockGeneration: readiness.lockGeneration) != nil else {
+                    return error("native_service_keep_awake_event_failed")
+                }
+                guard quietControl.mode(owner: owner) == "automation" else { return error("native_automation_owner_required") }
+                guard quietControl.takeoverState(now: now) == "manual_ready" else { return error("native_legacy_recovery_required") }
+                guard case .int(let ttl)? = params["ttl_seconds"], (1...300).contains(ttl) else { return error("native_invalid_ttl") }
+                let id = UUID().uuidString
+                let value = try nativeSession.begin(owner: owner, id: id, ttl: ttl, now: now, date: Date(),
+                    lockGeneration: readiness.lockGeneration)
+                // A lock/read failure between the first check and Begin cannot
+                // publish a usable lease. Callback revocation is supplementary.
+                let confirmed = nativeDeviceReadiness()
+                guard confirmed.ready, confirmed.lockGeneration == readiness.lockGeneration else {
+                    nativeSession.revoke(id: id)
+                    return error(confirmed.reason?.rawValue ?? "native_lock_generation_changed")
+                }
+                guard serviceKeepAwake.source(lockGeneration: confirmed.lockGeneration) != nil else {
+                    nativeSession.revoke(id: id); return error("native_service_keep_awake_unavailable")
+                }
+                return result(value)
             case "automation_native_status", "automation_native_heartbeat", "automation_native_end":
                 guard let id = params["lease_id"]?.stringValue else { return error("lease_id required") }
                 if method == "automation_native_heartbeat" {
-                    guard nativeDeviceReady() else { nativeSession.revoke(); return error("native_device_locked_or_unavailable") }
-                    return result(try nativeSession.heartbeat(owner: owner, id: id, now: now)) }
+                    if let reason = nativeControlAdmission(owner: owner, id: id, now: now) { return error(reason) }
+                    return result(try nativeSession.heartbeat(owner: owner, id: id, now: now))
+                }
                 if method == "automation_native_end" { return result(try nativeSession.end(owner: owner, id: id, now: now)) }
                 guard let values = nativeSession.status(owner: owner, id: id, now: now) else { return error("native lease not found for owner") }
                 return result(values)
@@ -1366,6 +1447,11 @@ class JSONRPCServer {
                 return result(["state": .string(quietControl.takeoverState(now: now))])
             default:
                 return Self.errorJSON(request.id, .methodNotFound)
+            }
+        } catch let failure as NativeAutomationSession.Failure {
+            switch failure {
+            case .busy: return error("native_session_busy")
+            case .invalid: return error("native_session_invalid")
             }
         } catch {
             return Self.errorJSON(request.id, .serverError("quiet control unavailable: \(error)"))

@@ -6,77 +6,87 @@
 - (void)pressLockButton;
 @end
 
+#import "../iCTRLCompat/LockHealth/include/ICLockHealthState.h"
+
 @implementation LockStateMonitor {
-    BOOL _isLocked;
-    BOOL _monitorAvailable;
-    void (^_onLocked)(void);
+    ICLockHealthState _health;
+    void (^_onLocked)(uint64_t);
     int _notifyToken;
+    dispatch_queue_t _notificationQueue;
 }
 
 + (instancetype)sharedMonitor {
     static LockStateMonitor *sharedInstance = nil;
     static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sharedInstance = [[self alloc] init];
-    });
+    dispatch_once(&onceToken, ^{ sharedInstance = [[self alloc] init]; });
     return sharedInstance;
 }
 
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _isLocked = YES;
-        _monitorAvailable = NO;
+        _health = ICLockHealthMake(false);
         _notifyToken = NOTIFY_TOKEN_INVALID;
-        int status = notify_register_dispatch("com.apple.springboard.lockstate",
-                                             &_notifyToken,
-                                             dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0),
-                                             ^(int token) {
-            void (^callback)(void) = nil;
-            @synchronized (self) {
-                uint64_t state = UINT64_MAX;
-                uint32_t result = notify_get_state(token, &state);
-                self->_isLocked = result != NOTIFY_STATUS_OK || state != 0;
-                // An unreadable state permanently disables admission until a new monitor.
-                if (result != NOTIFY_STATUS_OK) self->_monitorAvailable = NO;
-                if (self->_isLocked) callback = self->_onLocked;
-            }
-            if (callback) callback();
-        });
-        @synchronized (self) {
-            if (status == NOTIFY_STATUS_OK) {
-                uint64_t state = UINT64_MAX;
-                uint32_t result = notify_get_state(_notifyToken, &state);
-                _monitorAvailable = result == NOTIFY_STATUS_OK;
-                _isLocked = result != NOTIFY_STATUS_OK || state != 0;
-            }
-        }
-        if (status != NOTIFY_STATUS_OK) {
-            NSLog(@"iCTRL: Failed to register lock state notifications");
-        }
+        // No callback may inspect the token before registration initialization finishes.
+        _notificationQueue = dispatch_queue_create("com.openminis.ictrl.lock-notifications", DISPATCH_QUEUE_SERIAL);
+        dispatch_suspend(_notificationQueue);
+        int status = notify_register_dispatch("com.apple.springboard.lockstate", &_notifyToken,
+            _notificationQueue, ^(int token) {
+                [self refreshHealthForToken:token];
+            });
+        @synchronized (self) { _health = ICLockHealthMake(status == NOTIFY_STATUS_OK && _notifyToken != NOTIFY_TOKEN_INVALID); }
+        [self refreshHealth];
+        dispatch_resume(_notificationQueue);
+        if (status != NOTIFY_STATUS_OK) NSLog(@"iCTRL: Failed to register lock state notifications");
     }
     return self;
 }
 
-- (BOOL)isLocked {
-    @synchronized (self) { return _isLocked; }
+- (NSDictionary<NSString *, NSNumber *> *)snapshotLocked {
+    return @{@"registered": @(_health.registered), @"state_known": @(_health.stateKnown),
+             @"locked": @(_health.locked), @"generation": @(_health.generation)};
 }
 
-- (BOOL)monitorAvailable {
-    @synchronized (self) { return _monitorAvailable; }
-}
-
-- (void (^)(void))onLocked {
-    @synchronized (self) { return _onLocked; }
-}
-
-- (void)setOnLocked:(void (^)(void))callback {
-    void (^notifyNow)(void) = nil;
+- (NSDictionary<NSString *, NSNumber *> *)refreshHealthForToken:(int)expectedToken {
+    void (^callback)(uint64_t) = nil;
+    uint64_t generation = 0;
+    NSDictionary *snapshot;
     @synchronized (self) {
-        _onLocked = [callback copy];
-        if (_isLocked) notifyNow = _onLocked;
+        // Ignore queued callbacks from a token that has been invalidated/cancelled.
+        if (expectedToken != _notifyToken) return [self snapshotLocked];
+        uint64_t value = UINT64_MAX;
+        uint32_t result = NOTIFY_STATUS_INVALID_TOKEN;
+        if (_health.registered && _notifyToken != NOTIFY_TOKEN_INVALID) result = notify_get_state(_notifyToken, &value);
+        bool valid = _notifyToken != NOTIFY_TOKEN_INVALID && result != NOTIFY_STATUS_INVALID_TOKEN;
+        ICLockHealthObserve(&_health, valid, result == NOTIFY_STATUS_OK, value != 0);
+        if (!valid) _notifyToken = NOTIFY_TOKEN_INVALID;
+        if (!ICLockHealthReady(_health)) callback = _onLocked;
+        generation = _health.generation;
+        snapshot = [self snapshotLocked];
     }
-    if (notifyNow) notifyNow();
+    // Never acquire a session lock while holding the monitor lock. The callback
+    // must revoke by generation; a concurrent later recovery can admit a new lease.
+    if (callback) callback(generation);
+    return snapshot;
+}
+
+- (NSDictionary<NSString *, NSNumber *> *)refreshHealth {
+    int token;
+    @synchronized (self) { token = _notifyToken; }
+    return [self refreshHealthForToken:token];
+}
+
+- (BOOL)isLocked { @synchronized (self) { return !_health.stateKnown || _health.locked; } }
+- (BOOL)monitorAvailable { @synchronized (self) { return _health.registered && _health.stateKnown; } }
+- (void (^)(uint64_t))onLocked { @synchronized (self) { return _onLocked; } }
+- (void)setOnLocked:(void (^)(uint64_t))callback {
+    void (^notifyNow)(uint64_t) = nil;
+    uint64_t generation;
+    @synchronized (self) {
+        _onLocked = [callback copy]; generation = _health.generation;
+        if (!ICLockHealthReady(_health)) notifyNow = _onLocked;
+    }
+    if (notifyNow) notifyNow(generation);
 }
 
 - (BOOL)lockScreenWithTimeout:(NSTimeInterval)timeout error:(NSError **)error {
@@ -119,7 +129,9 @@
 }
 
 - (void)dealloc {
-    if (_notifyToken != NOTIFY_TOKEN_INVALID) notify_cancel(_notifyToken);
+    int token;
+    @synchronized (self) { token = _notifyToken; _notifyToken = NOTIFY_TOKEN_INVALID; }
+    if (token != NOTIFY_TOKEN_INVALID) notify_cancel(token);
 }
 
 @end

@@ -82,6 +82,7 @@ targets:
     sources:
       - path: iCTRLUITests
       - path: iCTRLKit
+      - path: iCTRLCompat/LockHealth
       # The operating manual, bundled so GET /skill can serve it at runtime.
       - path: SKILL.md
         buildPhase: resources

@@ -119,7 +119,7 @@ struct SettingsView: View {
                     Task { _ = await StartupCoordinator.shared.prepare(keepAwake: keepAwakeWhileServing); await runner.check() }
                 }
             } footer: {
-                Text("此开关仅在 iCTRL 或 Runner 位于前台且服务运行时保持屏幕常亮，Prepare 会同步此设置。新版跨 App 自动化由有时限、需心跳的原生会话通过 F13 保活，无需改系统自动锁定；结束、失联或锁屏后停止。此开关不能代替原生会话，也不能解锁手机。")
+                Text("此开关仅控制 iCTRL 或 Runner 前台的常亮，Prepare 会同步设置。Runner 服务启动后另以约每 10 秒 F13 跨 App 保活（界面忙时可能延后），等待连接和任务结束后也继续，直至停止服务；停止后按系统原有自动锁定时长息屏，无需修改设置。手动锁屏会暂停，主动解锁且服务仍运行时恢复保活。任务结束、超时或失联仍会撤销操控权限；保活不能解锁手机。")
             }
 
             deviceSection

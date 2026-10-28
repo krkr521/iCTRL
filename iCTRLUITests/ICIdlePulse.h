@@ -5,6 +5,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)isAvailable;
 /// nil means the event returned success, not proof of cross-app Auto-Lock behavior.
 + (nullable NSString *)sendF13;
+/// Authorization is rechecked on main immediately before the private event.
++ (nullable NSString *)sendF13Authorized:(BOOL (^)(void))authorize NS_SWIFT_NAME(sendF13(authorize:));
 /// Fresh lock notification state; failure is treated as locked. Never unlocks.
 + (BOOL)isLockedOrUnknown;
 @end
