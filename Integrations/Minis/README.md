@@ -11,3 +11,14 @@ XCTest explicit interruption handling addresses blocking alerts. It does not hid
 Run `python3 -B -m unittest discover -s tests -v` here. CI runs real POSIX filesystem/lock tests on Ubuntu and macOS; phone operations remain fake.
 
 Native14 additionally supports the explicitly discovered `f13_service`/`runner_service` lifecycle. Runner-service pulses persist across task End and heartbeat loss; UI remains strictly owner-lease scoped. Manual lock and unknown lock state pause service pulses, and old UI leases never revive. A service pulse is not proof of UI authorization.
+
+
+## Native15 Minis completion candidate
+
+New tasks require the trusted originating Minis session ID (canonical `minis://sessions/<id>`). Default completion returns to that precise chat and atomically ends the captured control lease and closes its Runner service. Explicit user stay/open-App intent skips the return, not End/stop. Codex continues using ordinary End and service keep-awake. This requires `minis_atomic_finish:1`; old Runner support is rejected before Begin.
+
+`finish --wait 30` waits for a bounded terminal state without holding the task lock. `control_end_confirmed`, `return_route`, `chat_verified`, and `service_finish:closing` are separate evidence: dispatch does not prove the chat rendered, and accepted closing is not a physical stop observation. Unknown in-flight UI is never replayed or followed by return UI. A lost finish response is not retried, and the client never sends a separate global config stop after End.
+
+Current candidate is local only, not deployed. Native stop-button cancellation, suspended/killed workers and physical device acceptance retain their explicit verification boundary. Historical tasks and audits are preserved.
+
+Automatic origin uses two completed tool rounds: first prepare+ensure (random IDs persisted), then start resolves the prior successful prepare receipt through globally unique nonce matching. The current shell input is not assumed persisted while executing. `start --wait-ready 20` polls only local state, reducing avoidable model/tool round trips. See docs/minis-origin-context.md.

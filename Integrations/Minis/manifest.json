@@ -1,16 +1,16 @@
 {
   "archive": "ictrl-ready-taskscope.zip",
-  "sha256": "66666ca08b299789b4ff54686a21cd40addb69a6945eac869df897f4da52a1cb",
-  "bytes": 32182,
-  "server_minimum": "1.98.13-krkr.native12",
-  "status": "native14_service_scope_candidate_not_installed",
+  "sha256": "183d4c44646e51e20ca95865f561002f214506dfcc67e4d1f172a0e13aee0846",
+  "bytes": 38264,
+  "server_minimum": "1.98.15-krkr.native15 with minis_atomic_finish:1",
+  "status": "native15_atomic_minis_finish_candidate_not_installed",
   "default_ttl_seconds": 240,
   "maximum_ttl_seconds": 300,
   "restore_reserve_seconds": 75,
   "files": {
     "install.sh": {
-      "bytes": 9059,
-      "sha256": "0d38257776175b42feddad21e1df5169e4f79d3fca5a6e545773141aa8801c96"
+      "bytes": 9171,
+      "sha256": "99c342208e6a59eb0fd7dec10a0bb6779f4d06439927434a426002730314b1e5"
     },
     "ictrl-ready/scripts/autolock_ui.py": {
       "bytes": 11984,
@@ -45,12 +45,16 @@
       "sha256": "75f4232b921dcf918c2bc240908a87c4f43f17cd3800ed925f819b39c76e1d05"
     },
     "ictrl-ready/scripts/task_session.py": {
-      "bytes": 19845,
-      "sha256": "a9184e2dda8df00d53f40ad584cb65b097b38e955b079c376f3164d8ae5ba9da"
+      "bytes": 30102,
+      "sha256": "cb2a5448cf3eb15ae3e4374245aeacb39e4ff64e412f7af9f0d746263d472576"
     },
     "ictrl-ready/SKILL.md": {
-      "bytes": 7149,
-      "sha256": "534f0b320fe45d13ff4e79a0a43aa47042b728a18fc4df2810d7ec5bed265a21"
+      "bytes": 11267,
+      "sha256": "3cf108e217fa6b3ff029a1cb5c8de713eb9997809f980363ae90706d91316a2d"
+    },
+    "ictrl-ready/scripts/origin_context.py": {
+      "bytes": 4777,
+      "sha256": "99056ad07c0ca86d81b258e1665d7476d16e69cb2e923ee90443ae3405c6ac37"
     }
   },
   "limits": [
@@ -64,5 +68,8 @@
     "f13_lease",
     "f13_service"
   ],
-  "ui_control_scope": "owner_lease"
+  "ui_control_scope": "owner_lease",
+  "minis_atomic_finish": 1,
+  "default_completion": "return_chat_then_end_and_close_service",
+  "codex_service_policy_unchanged": true
 }

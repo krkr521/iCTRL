@@ -19,3 +19,6 @@ XCTest interruption handling 仅针对实际阻挡交互的预期弹窗；未知
 Native14 的已知能力契约为 `keep_awake:f13_service`、`keep_awake_scope:runner_service`、`ui_control_scope:owner_lease`。Runner 服务/Automation Running 就绪后，即使未连接或任务结束，仍每10秒 F13 保活；服务停止才停止该保活并恢复系统既有3分钟自然锁屏行为。手动锁屏有效，锁态未知时暂停；解锁后服务保活可恢复，但旧任务 lease 永不复活。Native12/13 的 `f13_lease` 旧契约仍可识别；未知契约拒绝。
 
 服务 pulse 或 `service_keep_awake_running:true` 不是任务授权。UI 仍必须有本身份的 active lease、有效 TTL 与心跳；End/TTL/失联只撤销任务 UI，不应报告为 Native14 服务 F13 已停止。不要靠持续保活擅自续租或沿用 ended/expired lease。
+
+
+Native15为Minis增加专用原子收尾：返回原聊天（用户明确stay例外）、End并停手机服务。Codex Windows仍使用普通End，保持Runner服务/F13运行；不要把Minis偏好套到Codex，也不要因Automation Running仍显示就判End失败。

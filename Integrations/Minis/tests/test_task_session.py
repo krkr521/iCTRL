@@ -116,8 +116,8 @@ class Tests(unittest.TestCase):
             m.atomic(base/"active",task)
             m.atomic(d/"state", {"phase":"complete", "pid":1, "restore":"restored", "store_key":"device:abc", "client_path":None})
             with mock.patch.object(m,"locked",lock), mock.patch.object(m.subprocess,"Popen",side_effect=AssertionError("spawn")):
-                self.assertEqual(m.start(base,task,"device:abc",ttl_seconds=300)["status"],"complete")
-                with self.assertRaises(ValueError): m.start(base,task,"device:other")
+                self.assertEqual(m.start(base,task,"device:abc",ttl_seconds=300,completion_policy=None)["status"],"complete")
+                with self.assertRaises(ValueError): m.start(base,task,"device:other",completion_policy=None)
 
     def test_cleanup_budget_after_deadline(self):
         session=types.SimpleNamespace(local_deadline=100)
@@ -200,12 +200,12 @@ class Tests(unittest.TestCase):
             base=Path(td); task="a"*32; d=base/task; d.mkdir(); m.atomic(base/"active",task)
             m.atomic(d/"state",{"phase":"unknown","store_key":"device:abc","client_path":None})
             with mock.patch.object(m,"locked",lock), mock.patch.object(m.subprocess,"Popen",side_effect=AssertionError("spawn")):
-                self.assertEqual(m.start(base,task,"device:abc",ttl_seconds=300)["ttl_seconds"],300)
-                with self.assertRaises(ValueError): m.start(base,task,"device:abc",ttl_seconds=240)
-                with self.assertRaises(RuntimeError): m.start(base,"b"*32,"device:abc",ttl_seconds=240)
+                self.assertEqual(m.start(base,task,"device:abc",ttl_seconds=300,completion_policy=None)["ttl_seconds"],300)
+                with self.assertRaises(ValueError): m.start(base,task,"device:abc",ttl_seconds=240,completion_policy=None)
+                with self.assertRaises(RuntimeError): m.start(base,"b"*32,"device:abc",ttl_seconds=240,completion_policy=None)
         with tempfile.TemporaryDirectory() as td:
             with mock.patch.object(m,"locked",lock), mock.patch.object(m.subprocess,"Popen",side_effect=AssertionError("spawn")):
-                with self.assertRaises(ValueError): m.start(Path(td),"a"*32,"device:abc",ttl_seconds=75)
+                with self.assertRaises(ValueError): m.start(Path(td),"a"*32,"device:abc",ttl_seconds=75,completion_policy=None)
 
     def test_worker_ttl_and_insufficient_post_begin_budget(self):
         events=[]
@@ -263,12 +263,12 @@ class Tests(unittest.TestCase):
             base=Path(td); old="a"*32; d=base/old; d.mkdir();m.atomic(base/"active",old)
             m.atomic(d/"state",{"phase":"complete","pid":1,"store_key":"device:abc","client_path":None})
             with mock.patch.object(m,"locked",lock),mock.patch.object(m.subprocess,"Popen",return_value=types.SimpleNamespace(pid=123)) as spawn:
-                out=m.start(base,"b"*32,"device:abc")
+                out=m.start(base,"b"*32,"device:abc",completion_policy="stay")
                 self.assertEqual(out["ttl_seconds"],240)
                 self.assertIn("240",spawn.call_args.args[0])
-                with self.assertRaises(ValueError): m.start(base,"b"*32,"device:abc",ttl_seconds=300)
+                with self.assertRaises(ValueError): m.start(base,"b"*32,"device:abc",ttl_seconds=300,completion_policy=None)
         for ttl in (0,301,True,240.0):
             with self.subTest(ttl=ttl), tempfile.TemporaryDirectory() as td:
-                with self.assertRaises(ValueError): m.start(Path(td),"a"*32,"device:abc",ttl_seconds=ttl)
+                with self.assertRaises(ValueError): m.start(Path(td),"a"*32,"device:abc",ttl_seconds=ttl,completion_policy=None)
 
 if __name__ == "__main__": unittest.main()
