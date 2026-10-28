@@ -65,6 +65,9 @@ class NativeSession:
         registered = self.raw("automation_register", {"mode": "automation"})
         if registered.get("mode") != "automation":
             raise AutomationUnavailable("automation registration unavailable")
+        prior = self.raw("automation_owner_status", {})
+        if not isinstance(prior, dict) or prior.get("mode") != "automation" or prior.get("state") not in (None, "ended", "expired"):
+            raise AutomationUnavailable("owner already has a lease; no native Begin")
         started = self.clock()
         self.local_deadline = started + self.ttl
         try:
@@ -72,8 +75,13 @@ class NativeSession:
                 value = self.raw("automation_native_begin", {"ttl_seconds": self.ttl})
             except (OSError, http.client.HTTPException) as error:
                 if _verification_failure(error): raise
-                # Observe once; never repeat a possibly accepted Begin.
-                value = self.raw("automation_owner_status", {})
+                # Owner identity cannot distinguish concurrent clients sharing a token.
+                # Observe once, but never adopt or End an unproven lease.
+                try:
+                    self.raw("automation_owner_status", {})
+                except BaseException:
+                    pass
+                raise RestorationUncertain("Begin outcome unknown; no UI or End; await heartbeat expiry") from error
             lease, deadline, stamp = self._validate(value)
             self.lease_id, self.deadline = lease, deadline
             self.local_deadline = min(self.local_deadline, self.clock() + stamp - self.wall())

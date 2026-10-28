@@ -1,6 +1,9 @@
 """Offline protocol/safety tests; no claim of device keep-awake acceptance."""
 import sys
 import ast
+import hashlib
+import json
+import zipfile
 import contextlib
 import contextvars
 from unittest import mock
@@ -29,7 +32,7 @@ class Phone:
             return dict(available=self.available, native_automation_session=1,
                         keep_awake="f13_lease", interruption_policy="explicit_alerts_only",
                         notification_suppression=False)
-        if method == "automation_register": return {"mode": "automation"}
+        if method in {"automation_register", "automation_owner_status"}: return {"mode": "automation"}
         if method == "automation_native_end" and self.fail_end: raise TimeoutError()
         if method.startswith("automation_native_"):
             return dict(mode="automation", backend="native", lease_id="a" * 32,
@@ -54,7 +57,7 @@ class NativeSessionTests(unittest.TestCase):
             session.call("tap", {"x": 10, "y": 10})
         methods = [m for m, p in phone.calls]
         self.assertEqual(methods, ["automation_native_capabilities", "automation_register",
-                                  "automation_native_begin", "automation_native_status", "tap",
+                                  "automation_owner_status", "automation_native_begin", "automation_native_status", "tap",
                                   "automation_native_end"])
         self.assertEqual(phone.calls[-2][1]["automation_session"], "a" * 32)
 
@@ -82,22 +85,36 @@ class NativeSessionTests(unittest.TestCase):
                 session.call("tap", {}, raw=lost)
         self.assertEqual([m for m, p in phone.calls].count("tap"), 1)
 
-    def test_lost_begin_recovers_flat_owner_once_and_ends(self):
+    def test_lost_begin_never_adopts_unproven_owner_lease(self):
         phone = Phone()
         def raw(method, params):
             if method == "automation_native_begin":
                 phone.calls.append((method, params)); raise TimeoutError()
             if method == "automation_owner_status":
                 phone.calls.append((method, params))
+                if sum(m == "automation_owner_status" for m, p in phone.calls) == 1:
+                    return {"mode": "automation"}
                 return dict(mode="automation", backend="native", state="active", lease_id="a" * 32,
                             deadline="1970-01-01T00:18:40Z")
             return phone(method, params)
-        with NativeSession(raw, clock=lambda: 1, wall_clock=lambda: 1000) as session:
-            session.call("tap", {})
+        with self.assertRaises(RestorationUncertain):
+            with NativeSession(raw, clock=lambda: 1, wall_clock=lambda: 1000): self.fail("body")
         methods = [m for m, p in phone.calls]
         self.assertEqual(methods.count("automation_native_begin"), 1)
-        self.assertEqual(methods.count("automation_owner_status"), 1)
-        self.assertEqual(methods[-1], "automation_native_end")
+        self.assertEqual(methods.count("automation_owner_status"), 2)
+        self.assertNotIn("tap", methods)
+        self.assertNotIn("automation_native_end", methods)
+
+    def test_existing_owner_lease_is_not_adopted(self):
+        phone = Phone()
+        def raw(method, params):
+            if method == "automation_owner_status":
+                phone.calls.append((method, params))
+                return dict(mode="automation", backend="native", state="active", lease_id="old")
+            return phone(method, params)
+        with self.assertRaises(AutomationUnavailable):
+            with NativeSession(raw): self.fail("body")
+        self.assertNotIn("automation_native_begin", [m for m, p in phone.calls])
 
     def test_legacy_pending_stays_untouched(self):
         class Manager:
@@ -123,6 +140,18 @@ class NativeSessionTests(unittest.TestCase):
             namespace["STATE"] = Path("synthetic")
             with self.assertRaisesRegex(RuntimeError, "LegacyAutoLockRecoveryRequired"):
                 with namespace["automation_session"](): self.fail("body")
+
+    def test_minis_shipped_zip_matches_reviewed_source(self):
+        base = Path(__file__).resolve().parents[1]
+        manifest = json.loads((base / "manifest.json").read_text(encoding="utf-8"))
+        archive = base / manifest["archive"]
+        self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(), manifest["sha256"])
+        with zipfile.ZipFile(archive) as zipped:
+            self.assertEqual(set(zipped.namelist()), set(manifest["files"]))
+            for name, entry in manifest["files"].items():
+                data = (base / name).read_bytes()
+                self.assertEqual(zipped.read(name), data)
+                self.assertEqual(hashlib.sha256(data).hexdigest(), entry["sha256"])
 
     def test_windows_native_client_stays_in_sync(self):
         windows = Path(__file__).resolve().parents[2] / "Windows-Client/native_session.py"

@@ -1,7 +1,7 @@
 {
   "archive": "ictrl-ready-taskscope.zip",
-  "sha256": "101b28e79284d5b34fd1503929c39eac2b12989630c36b9028ec8626fb6a5263",
-  "bytes": 31619,
+  "sha256": "846fa867d69d0c072a676a1fa341d7093bd4463033df198ca61ce512463a011d",
+  "bytes": 31777,
   "server_minimum": "1.98.13-krkr.native12",
   "status": "native12_candidate_not_installed",
   "default_ttl_seconds": 240,
@@ -33,8 +33,8 @@
       "sha256": "4f51b93072f3449c88a46d8cf39d70ff59a7a8600ac6f77b54eabac7352a6a67"
     },
     "ictrl-ready/scripts/native_session.py": {
-      "bytes": 7035,
-      "sha256": "1ca0b3dfd8c1618f4af0e2efb84fe6db2c913e1b48036ec00a5d7b6e79b6a466"
+      "bytes": 7605,
+      "sha256": "ce2cdfdb7082825b1d2cfb27f221d0c3d3b51727e64be93c27a2869cc8799979"
     },
     "ictrl-ready/scripts/quiet_batch.py": {
       "bytes": 4765,
