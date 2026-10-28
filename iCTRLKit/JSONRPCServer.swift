@@ -1495,7 +1495,7 @@ class JSONRPCServer {
                 guard params["mode"]?.stringValue == "manual", quietControl.mode(owner: owner) == "manual" else {
                     return error("explicit manual mode required")
                 }
-                nativeSession.revoke()
+                nativeSession.revokeForManualTakeover()
                 if let launch = try quietControl.takeover(now: now) {
                     log(QuietDiagnostics.message(.endRequested, action: .end, source: .takeover,
                         state: quietControl.diagnosticState(leaseID: launch.leaseID)))

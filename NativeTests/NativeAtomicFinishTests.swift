@@ -36,6 +36,35 @@ final class NativeAtomicFinishTests: XCTestCase {
         XCTAssertEqual(receipt.values["state"], .string("ended"))
         XCTAssertFalse(sessions.gate(owner: "minis", id: "lease", now: 20))
     }
+    func testExplicitManualTakeoverRejectsOldFinishWithoutSealingService() throws {
+        let service = ServiceKeepAwakeAuthorization()
+        XCTAssertTrue(service.ready(ticket: try XCTUnwrap(service.prepareStart())))
+        let source = try XCTUnwrap(service.source(lockGeneration: 0))
+        let sessions = NativeAutomationSession()
+        _ = try sessions.begin(owner: "minis", id: "lease", ttl: 120, now: 1, date: Date())
+        sessions.revokeForManualTakeover()
+        XCTAssertFalse(sessions.gate(owner: "minis", id: "lease", now: 2))
+        XCTAssertThrowsError(try sessions.finish(owner: "minis", request: request(policy: "skip_unknown", origin: nil), now: 2))
+        XCTAssertFalse(sessions.isFinishing)
+        XCTAssertEqual(service.source(lockGeneration: 0), source)
+        // A later task may use this service, but the old Minis task cannot stop it.
+        XCTAssertNoThrow(try sessions.begin(owner: "codex", id: "new", ttl: 120, now: 3, date: Date()))
+        XCTAssertTrue(sessions.gate(owner: "codex", id: "new", now: 4))
+        XCTAssertThrowsError(try sessions.finish(owner: "minis", request: request(), now: 4))
+        XCTAssertFalse(sessions.isFinishing)
+    }
+    func testHeartbeatExpiryAndHealthRevocationRetainOwnedCleanupAuthority() throws {
+        for healthRevoked in [false, true] {
+            let sessions = NativeAutomationSession()
+            _ = try sessions.begin(owner: "minis", id: "lease", ttl: 120, now: 1, date: Date())
+            if healthRevoked { sessions.revoke() }
+            // With no explicit takeover/new owner, heartbeat silence and a lock
+            // still permit bounded cleanup. This does not create a new UI lease.
+            XCTAssertFalse(sessions.gate(owner: "minis", id: "lease", now: 20))
+            XCTAssertEqual(try sessions.finish(owner: "minis", request: request(policy: "skip_unknown", origin: nil), now: 20).values["state"], .string("ended"))
+            XCTAssertTrue(sessions.isFinishing)
+        }
+    }
     func testReturnRouteIsFixedAndSkipPoliciesDoNotOpenURL() throws {
         XCTAssertEqual(try request().returnURL?.absoluteString, "minis://sessions/chat-123")
         for policy in ["stay", "skip_unknown"] { XCTAssertNil(try request(policy: policy, origin: nil).returnURL) }

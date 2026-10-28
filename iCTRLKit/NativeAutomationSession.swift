@@ -6,11 +6,14 @@ final class NativeAutomationSession {
     private let lock = NSLock()
     private var lease: Lease?
     private var finishRequest: NativeFinishRequest?
+    /// Explicit manual takeover supersedes the old task's authority to stop the service.
+    /// Expiry and lock/health revocation deliberately do not set this tombstone.
+    private var finishInvalidatedByManualTakeover = false
     var isFinishing: Bool { lock.lock(); defer { lock.unlock() }; return finishRequest != nil }
     /// A finishing server never admits another lease, even after End/expiry.
     func finish(owner: String, request: NativeFinishRequest, now: TimeInterval) throws -> (values: [String: JSONValue], first: Bool) {
         lock.lock(); defer { lock.unlock() }; expire(now)
-        guard var value = lease, value.owner == owner, value.id == request.leaseID else { throw Failure.invalid }
+        guard !finishInvalidatedByManualTakeover, var value = lease, value.owner == owner, value.id == request.leaseID else { throw Failure.invalid }
         if let previous = finishRequest {
             guard previous == request else { throw Failure.invalid }
             return (values(value), false)
@@ -28,6 +31,7 @@ final class NativeAutomationSession {
         lock.lock(); defer { lock.unlock() }; expire(now)
         guard now.isFinite, !owner.isEmpty, !id.isEmpty, (1...300).contains(ttl) else { throw Failure.invalid }
         guard finishRequest == nil, lease?.state != "active" else { throw Failure.busy }
+        finishInvalidatedByManualTakeover = false
         lease = Lease(owner: owner, id: id, deadline: now + Double(ttl),
                       wallDeadline: ISO8601DateFormatter().string(from: date.addingTimeInterval(Double(ttl))), lockGeneration: lockGeneration, heartbeat: now + 15)
         return values(lease!)
@@ -46,6 +50,12 @@ final class NativeAutomationSession {
         lock.lock(); defer { lock.unlock() }; expire(now)
         guard var value = lease, value.owner == owner, value.id == id else { throw Failure.invalid }
         value.state = "ended"; lease = value; return values(value)
+    }
+    func revokeForManualTakeover() {
+        lock.lock(); defer { lock.unlock() }
+        guard lease != nil else { return }
+        lease?.state = "ended"
+        finishInvalidatedByManualTakeover = true
     }
     func revoke() { lock.lock(); defer { lock.unlock() }; if lease != nil { lease!.state = "ended" } }
     func revoke(id: String) {
