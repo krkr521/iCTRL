@@ -6,8 +6,14 @@ class JSONRPCServer {
     private let fileTransfers = FileTransferStore()
     private let nativeSession = NativeAutomationSession()
     /// One-shot runner cleanup, independent of the Minis caller after ACK.
-    var onNativeFinish: ((URL?, @escaping () -> Void) -> Void)?
-    private var nativeFinishStarted = false
+    var onNativeFinish: ((NativeFinishReservation, @escaping () -> Bool, @escaping (MinisHandoffOutcome) -> Void) -> Void)?
+    private struct PendingNativeFinish {
+        let reservation: NativeFinishReservation
+        var replies: [([String: JSONValue]?, JSONRPCError?) -> Void]
+    }
+    // Access only on the serial listener queue, including completion/fallback paths.
+    private var pendingNativeFinishes: [String: PendingNativeFinish] = [:]
+    private var completedNativeFinishes: [String: [String: JSONValue]] = [:]
     private var nativeFinishStopped = false
     var isNativeFinishing: Bool { nativeSession.isFinishing }
     private let serviceKeepAwake = ServiceKeepAwakeAuthorization()
@@ -1266,7 +1272,7 @@ class JSONRPCServer {
             return
         }
         if nativeSession.isFinishing {
-            let allowed: Set<String> = ["automation_native_capabilities", "automation_native_status", "automation_owner_status", "automation_native_end"]
+            let allowed: Set<String> = ["automation_native_capabilities", "automation_native_status", "automation_owner_status", "automation_native_end", "automation_takeover"]
             if (rpcRequest.method.hasPrefix("automation_") && !allowed.contains(rpcRequest.method)) ||
                 (rpcRequest.method == "config" && !(rpcRequest.params ?? [:]).isEmpty) {
                 sendSealed(connection, seal: seal, json: Self.errorJSON(rpcRequest.id, .serverError("native_service_closing")))
@@ -1321,49 +1327,82 @@ class JSONRPCServer {
     }
 
     private func handleNativeFinish(_ request: JSONRPCRequest, owner: String,
-                                    connection: NWConnection, seal: (String) -> String) {
+                                    connection: NWConnection, seal: @escaping (String) -> String) {
         guard let finish = NativeFinishRequest(params: request.params ?? [:]) else {
             sendSealed(connection, seal: seal, json: Self.errorJSON(request.id, .invalidParams)); return
         }
+        let reply: ([String: JSONValue]?, JSONRPCError?) -> Void = { [self] values, error in
+            let json = error.map { Self.errorJSON(request.id, $0) } ?? Self.resultJSON(request.id, values ?? [:])
+            self.sendSealed(connection, seal: seal, json: json, completion: { [weak self] in
+                guard error == nil else { return }
+                self?.queue.async { self?.stopCompletedNativeFinish() }
+            })
+        }
+        do {
+            let (reservation, first) = try nativeSession.reserveFinish(owner: owner, request: finish, now: ProcessInfo.processInfo.systemUptime)
+            if !first {
+                if let values = completedNativeFinishes[reservation.id] { reply(values, nil) }
+                else if pendingNativeFinishes[reservation.id] != nil { pendingNativeFinishes[reservation.id]?.replies.append(reply) }
+                else { reply(nil, .serverError("native_finish_no_longer_current")) }
+                return
+            }
+            pendingNativeFinishes[reservation.id] = PendingNativeFinish(reservation: reservation, replies: [reply])
+            if finish.policy != "return_chat" {
+                completeNativeFinish(reservation, outcome: .init(finish.policy == "stay" ? "skipped_stay" : "skipped_unknown")); return
+            }
+            guard reservation.deadline != nil else {
+                completeNativeFinish(reservation, outcome: .init("skipped_expired")); return
+            }
+            guard let callback = onNativeFinish else {
+                completeNativeFinish(reservation, outcome: .init("unavailable")); return
+            }
+            let authorize = { [weak self] in
+                guard let self, self.isRunning, self.nativeSession.mayHandoff(reservation, now: ProcessInfo.processInfo.systemUptime) else { return false }
+                let health = self.nativeDeviceReadiness()
+                guard health.ready, let lease = self.nativeSession.authorizedLease(owner: owner, id: finish.leaseID, now: ProcessInfo.processInfo.systemUptime), lease.lockGeneration == health.lockGeneration else { return false }
+                return self.serviceKeepAwake.source(lockGeneration: health.lockGeneration) != nil && self.nativeSession.mayHandoff(reservation, now: ProcessInfo.processInfo.systemUptime)
+            }
+            // A blocked UI queue cannot retain an open service forever. This only
+            // ends the captured lease after identity/takeover revalidation.
+            queue.asyncAfter(deadline: .now() + 10) { [self] in self.completeNativeFinish(reservation, outcome: .init("timeout")) }
+            callback(reservation, authorize) { [weak self] outcome in
+                self?.queue.async { self?.completeNativeFinish(reservation, outcome: outcome) }
+            }
+        } catch { reply(nil, .serverError("native_finish_owner_or_request_mismatch")) }
+    }
+
+    private func completeNativeFinish(_ reservation: NativeFinishReservation, outcome: MinisHandoffOutcome) {
+        guard let pending = pendingNativeFinishes.removeValue(forKey: reservation.id) else { return }
         do {
             serviceStateLock.lock()
-            let outcome: (values: [String: JSONValue], first: Bool)
+            var values: [String: JSONValue]
             do {
-                outcome = try nativeSession.finish(owner: owner, request: finish, now: ProcessInfo.processInfo.systemUptime)
-                serviceKeepAwake.stop() // synchronous admission closure, before the receipt
+                values = try nativeSession.completeFinish(reservation, now: ProcessInfo.processInfo.systemUptime)
+                serviceKeepAwake.stop()
             } catch { serviceStateLock.unlock(); throw error }
             serviceStateLock.unlock()
-            var values = outcome.values
             values["service_finish"] = .string("closing")
             values["chat_verified"] = .bool(false)
-            let route = finish.policy == "stay" ? "skipped_stay" : finish.policy == "skip_unknown" ? "skipped_unknown" : onNativeFinish == nil ? "unavailable" : "dispatched"
-            values["return_route"] = .string(route)
-            values["completion_policy"] = .string(finish.policy)
-            // Sending completion and fallback race into one one-shot cleanup. A
-            // caller suspension, network loss or duplicate finish cannot lose stop.
-            let cleanup = { [self] in self.executeNativeFinish(route: finish.returnURL) }
-            sendSealed(connection, seal: seal, json: Self.resultJSON(request.id, values), completion: cleanup)
-            if outcome.first { queue.asyncAfter(deadline: .now() + 0.5, execute: cleanup) }
+            values["handoff_state"] = .string(outcome.state)
+            values["foreground_confirmed"] = .bool(outcome.foregroundConfirmed)
+            values["return_route"] = .string(outcome.dispatched ? "dispatched" : outcome.state == "skipped_stay" ? "skipped_stay" : outcome.state == "skipped_unknown" ? "skipped_unknown" : "unavailable")
+            values["completion_policy"] = .string(reservation.request.policy)
+            completedNativeFinishes[reservation.id] = values
+            log("Minis handoff terminal: " + outcome.state + " (chat unverified)")
+            for reply in pending.replies { reply(values, nil) }
+            queue.asyncAfter(deadline: .now() + 0.5) { [self] in self.stopCompletedNativeFinish() }
         } catch {
-            sendSealed(connection, seal: seal, json: Self.errorJSON(request.id, .serverError("native_finish_owner_or_request_mismatch")))
+            // Explicit manual takeover or replacement supersedes old cleanup.
+            // Never seal or stop that service, and never replay the URL.
+            for reply in pending.replies { reply(nil, .serverError("native_finish_superseded_no_service_stop")) }
         }
     }
 
-    private func executeNativeFinish(route: URL?) {
-        serviceStateLock.lock()
-        guard !nativeFinishStarted else { serviceStateLock.unlock(); return }
-        nativeFinishStarted = true
-        serviceStateLock.unlock()
-        let stopCaptured = { [self] in
-            self.serviceStateLock.lock(); defer { self.serviceStateLock.unlock() }
-            guard !self.nativeFinishStopped else { return }
-            self.nativeFinishStopped = true
-            self.stop() // this exact instance, never the Runner's replaceable server
-        }
-        // Independent queue fallback still stops the listener if the UI queue is wedged.
-        queue.asyncAfter(deadline: .now() + 3, execute: stopCaptured)
-        if let callback = onNativeFinish { callback(route, stopCaptured) }
-        else { stopCaptured() }
+    private func stopCompletedNativeFinish() {
+        serviceStateLock.lock(); defer { serviceStateLock.unlock() }
+        guard !nativeFinishStopped, nativeSession.isFinishing, !nativeSession.hasPendingFinish else { return }
+        nativeFinishStopped = true
+        stop() // exact captured server; never a replaceable Runner server property
     }
 
     private func handleQuietRPC(_ request: JSONRPCRequest, owner: String, local: Bool) -> String {
@@ -1381,8 +1420,8 @@ class JSONRPCServer {
             case "automation_native_capabilities":
                 let readiness = nativeDeviceReadiness()
                 var values = readiness.diagnostics
-                values.merge(["native_automation_session": .int(1), "minis_atomic_finish": .int(onNativeFinish == nil ? 0 : 1),
-                    "available": .bool(readiness.ready && serviceKeepAwake.source(lockGeneration: readiness.lockGeneration) != nil),
+                values.merge(["native_automation_session": .int(1), "minis_atomic_finish": .int(onNativeFinish == nil ? 0 : 1), "minis_handoff": .int(onNativeFinish == nil ? 0 : 1),
+                    "available": .bool(readiness.ready && !nativeSession.isFinishing && serviceKeepAwake.source(lockGeneration: readiness.lockGeneration) != nil),
                     "keep_awake": .string("f13_service"), "keep_awake_scope": .string("runner_service"),
                     "keep_awake_interval_seconds": .int(10), "ui_control_scope": .string("owner_lease"), "interruption_policy": .string("explicit_alerts_only"),
                     "notification_suppression": .bool(false)]) { _, new in new }
@@ -1492,6 +1531,7 @@ class JSONRPCServer {
                 }
                 return result(statusValues(id))
             case "automation_takeover":
+                if nativeSession.isFinishing && !nativeSession.hasPendingFinish { return error("native_service_closing") }
                 guard params["mode"]?.stringValue == "manual", quietControl.mode(owner: owner) == "manual" else {
                     return error("explicit manual mode required")
                 }

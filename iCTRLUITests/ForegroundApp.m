@@ -519,6 +519,34 @@
     }
 }
 
+// The same backends/selectors as openURL:, without a main-thread semaphore or
+// retry after a possibly delivered daemon call. Unsupported daemon selects one
+// existing workspace call; a delivered call is never replayed on error/timeout.
++ (void)openURLOnce:(NSURL *)url authorize:(BOOL (^)(void))authorize completion:(void (^)(BOOL))completion {
+    @try {
+        if (!authorize()) { completion(NO); return; }
+        Class cls = NSClassFromString(@"XCTRunnerDaemonSession");
+        id session = cls && [cls respondsToSelector:@selector(sharedSession)] ? [cls performSelector:@selector(sharedSession)] : nil;
+        if (session && [session respondsToSelector:@selector(openDefaultApplicationForURL:completion:)]) {
+            if (!authorize()) { completion(NO); return; }
+            [session openDefaultApplicationForURL:url completion:^(BOOL result, NSError *error) { completion(result && error == nil); }];
+            return;
+        }
+        Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+        id workspace = workspaceClass ? [workspaceClass performSelector:@selector(defaultWorkspace)] : nil;
+        if (!workspace || !authorize()) { completion(NO); return; }
+        if ([workspace respondsToSelector:@selector(openSensitiveURL:withOptions:)]) {
+            BOOL (*fn)(id, SEL, id, id) = (BOOL (*)(id, SEL, id, id))objc_msgSend;
+            completion(fn(workspace, @selector(openSensitiveURL:withOptions:), url, nil)); return;
+        }
+        if ([workspace respondsToSelector:@selector(openURL:)]) {
+            BOOL (*fn)(id, SEL, id) = (BOOL (*)(id, SEL, id))objc_msgSend;
+            completion(fn(workspace, @selector(openURL:), url)); return;
+        }
+        completion(NO);
+    } @catch (__unused NSException *error) { completion(NO); }
+}
+
 + (BOOL)openURL:(NSURL *)url {
     // 1) XCTest daemon session — the sanctioned path from a runner (iOS 16.4+).
     //    This is what WebDriverAgent uses; UIApplication/LSApplicationWorkspace

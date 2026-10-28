@@ -36,6 +36,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// where UIApplication.openURL is unreliable. Uses LSApplicationWorkspace's
 /// openSensitiveURL:/openURL: private APIs. Returns YES on success.
 + (BOOL)openURL:(NSURL *)url;
+/// One asynchronous dispatch using an existing backend. Never retries a sent URL.
++ (void)openURLOnce:(NSURL *)url authorize:(BOOL (^)(void))authorize
+        completion:(void (^)(BOOL accepted))completion NS_SWIFT_NAME(openURLOnce(_:authorize:completion:));
 
 /// Activate an app by bundle id, catching any XCTest NSException (which Swift
 /// cannot catch and which would otherwise abort the whole runner). Returns YES if

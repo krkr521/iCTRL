@@ -1105,6 +1105,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
     /// service). Serial so actions still run one-at-a-time in order.
     private let rpcQueue = DispatchQueue(label: "com.openminis.ictrl.rpc")
     private var serviceKeepAwake: ServiceKeepAwake?
+    private var minisHandoffDrivers: [String: MinisHandoffDriver] = [:]
 
     /// Consecutive UI-method timeouts. Reset by any UI method that completes.
     private var uiTimeoutStreak = 0
@@ -1457,19 +1458,19 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 }
             }
         }
-        srv.onNativeFinish = { [weak self, weak srv] route, complete in
-            let deadline = ProcessInfo.processInfo.systemUptime + 2
-            // Use the ordinary serial action lane; never race an in-flight gesture.
-            self?.rpcQueue.async {
-                DispatchQueue.main.async {
-                    guard let self, let srv, self.server === srv, srv.isRunning,
-                          ProcessInfo.processInfo.systemUptime < deadline else { complete(); return }
-                    guard let route else { complete(); return }
-                    UIApplication.shared.open(route, options: [:]) { opened in
-                        Self.logBuffer.append(opened ? "Minis finish return URL accepted (chat unverified)" : "Minis finish return URL failed")
-                        complete()
-                    }
-                }
+        srv.onNativeFinish = { [weak self, weak srv] reservation, authorize, complete in
+            guard let self else { complete(.init("cancelled")); return }
+            self.rpcQueue.async { [weak self, weak srv] in
+                guard let self, let srv, self.server === srv else { complete(.init("cancelled")); return }
+                let driver = MinisHandoffDriver(queue: self.rpcQueue, reservation: reservation,
+                    authorize: { [weak self, weak srv] in
+                        guard let self, let srv, self.server === srv else { return false }; return authorize()
+                    }, completion: { [weak self] outcome in
+                        self?.minisHandoffDrivers.removeValue(forKey: reservation.id)
+                        complete(outcome)
+                    })
+                self.minisHandoffDrivers[reservation.id] = driver
+                driver.start()
             }
         }
         let lockMonitor = LockStateMonitor.shared()

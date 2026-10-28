@@ -6,9 +6,40 @@ final class NativeAutomationSession {
     private let lock = NSLock()
     private var lease: Lease?
     private var finishRequest: NativeFinishRequest?
+    private var finishReservation: NativeFinishReservation?
+    private var finishCompleted = false
+    func reserveFinish(owner: String, request: NativeFinishRequest, now: TimeInterval) throws -> (NativeFinishReservation, Bool) {
+        lock.lock(); defer { lock.unlock() }; expire(now)
+        guard !finishInvalidatedByManualTakeover, let value = lease, value.owner == owner, value.id == request.leaseID else { throw Failure.invalid }
+        if let previous = finishRequest {
+            guard previous == request, let reservation = finishReservation else { throw Failure.invalid }
+            return (reservation, false)
+        }
+        let deadline = request.policy == "return_chat" && value.state == "active" ? min(min(value.deadline, value.heartbeat), now + 8) : nil
+        let reservation = NativeFinishReservation(id: UUID().uuidString, owner: owner, request: request, deadline: deadline)
+        finishRequest = request; finishReservation = reservation
+        return (reservation, true)
+    }
+    func mayHandoff(_ reservation: NativeFinishReservation, now: TimeInterval) -> Bool {
+        lock.lock(); defer { lock.unlock() }; expire(now)
+        guard finishReservation == reservation, !finishCompleted, !finishInvalidatedByManualTakeover,
+              lease?.state == "active", let deadline = reservation.deadline, now < deadline else { return false }
+        return true
+    }
+    func reservationCurrent(_ reservation: NativeFinishReservation) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return finishReservation == reservation && !finishInvalidatedByManualTakeover
+    }
+    func completeFinish(_ reservation: NativeFinishReservation, now: TimeInterval) throws -> [String: JSONValue] {
+        lock.lock(); defer { lock.unlock() }; expire(now)
+        guard finishReservation == reservation, !finishInvalidatedByManualTakeover,
+              var value = lease, value.owner == reservation.owner, value.id == reservation.request.leaseID else { throw Failure.invalid }
+        value.state = "ended"; lease = value; finishCompleted = true; return values(value)
+    }
     /// Explicit manual takeover supersedes the old task's authority to stop the service.
     /// Expiry and lock/health revocation deliberately do not set this tombstone.
     private var finishInvalidatedByManualTakeover = false
+    var hasPendingFinish: Bool { lock.lock(); defer { lock.unlock() }; return finishReservation != nil && !finishCompleted && !finishInvalidatedByManualTakeover }
     var isFinishing: Bool { lock.lock(); defer { lock.unlock() }; return finishRequest != nil }
     /// A finishing server never admits another lease, even after End/expiry.
     func finish(owner: String, request: NativeFinishRequest, now: TimeInterval) throws -> (values: [String: JSONValue], first: Bool) {
@@ -16,9 +47,9 @@ final class NativeAutomationSession {
         guard !finishInvalidatedByManualTakeover, var value = lease, value.owner == owner, value.id == request.leaseID else { throw Failure.invalid }
         if let previous = finishRequest {
             guard previous == request else { throw Failure.invalid }
-            return (values(value), false)
+            if finishCompleted { return (values(value), false) }
         }
-        value.state = "ended"; lease = value; finishRequest = request
+        value.state = "ended"; lease = value; finishRequest = request; finishCompleted = true
         return (values(value), true)
     }
     private func expire(_ now: TimeInterval) {
@@ -56,6 +87,7 @@ final class NativeAutomationSession {
         guard lease != nil else { return }
         lease?.state = "ended"
         finishInvalidatedByManualTakeover = true
+        finishRequest = nil; finishReservation = nil; finishCompleted = false
     }
     func revoke() { lock.lock(); defer { lock.unlock() }; if lease != nil { lease!.state = "ended" } }
     func revoke(id: String) {
@@ -78,7 +110,7 @@ final class NativeAutomationSession {
     }
     func gate(owner: String, id: String?, now: TimeInterval) -> Bool {
         lock.lock(); defer { lock.unlock() }; expire(now)
-        return lease?.owner == owner && lease?.id == id && lease?.state == "active"
+        return finishRequest == nil && lease?.owner == owner && lease?.id == id && lease?.state == "active"
     }
     private func values(_ value: Lease) -> [String: JSONValue] {
         ["mode": .string("automation"), "backend": .string("native"), "lease_id": .string(value.id),
@@ -113,5 +145,21 @@ struct NativeFinishRequest: Equatable {
         guard let originSessionID else { return nil }
         var components = URLComponents(); components.scheme = "minis"; components.host = "sessions"
         components.path = "/" + originSessionID; return components.url
+    }
+}
+
+struct NativeFinishReservation: Equatable {
+    let id: String
+    let owner: String
+    let request: NativeFinishRequest
+    let deadline: TimeInterval?
+}
+
+struct MinisHandoffOutcome {
+    let state: String
+    let dispatched: Bool
+    let foregroundConfirmed: Bool
+    init(_ state: String, dispatched: Bool = false, foregroundConfirmed: Bool = false) {
+        self.state = state; self.dispatched = dispatched; self.foregroundConfirmed = foregroundConfirmed
     }
 }
