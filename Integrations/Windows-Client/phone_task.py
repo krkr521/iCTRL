@@ -112,7 +112,7 @@ def main(argv=None) -> int:
         quiet_status = "unconfirmed" if (type(error).__name__ == "RestorationUncertain"
                                          or getattr(error, "automation_cleanup_error", None)) else "unknown"
         if quiet_status == "unknown" and session is not None and getattr(session, "cleanup_error", None) is None:
-            quiet_status = "legacy_setup" if session.legacy else "confirmed"
+            quiet_status = "not_required" if getattr(session, "native", False) else ("legacy_setup" if session.legacy else "confirmed")
         print(json.dumps({"ok": False, "error_type": type(error).__name__,
                           "restore_status": status,
                           "quiet_restore_status": quiet_status,

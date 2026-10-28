@@ -146,3 +146,24 @@ for a diagnostic. A connection loss occurred during that request, but its
 cause was not confirmed. Offline investigation uses a locally held Developer
 Disk Image instead. The fixed `automation_ui` reader is unchanged. These
 changes do not implement double-tap reveal or control of the system shade.
+
+
+Version `1.98.13-krkr.native12` adds a separate authenticated local automation lease.
+Normal Native12 clients use periodic F13 events instead of Settings Auto-Lock changes,
+and no longer launch Quiet/Focus Shortcuts. Capabilities require the exact supported
+XCTest interruption getter and F13 event ABI; missing runtime support refuses native
+begin. A five-second heartbeat, fifteen-second silence bound and absolute maximum
+300-second TTL govern authorization. Old Quiet/Auto-Lock recovery remains separate;
+client candidates preserve and refuse to hide pending state.
+
+The Runner disables implicit XCTest alert responses and checks for blocking system
+alerts before input. Unknown alerts refuse mutation; a fresh explicit alert target
+may be used only within the authorized task. This does not suppress or mute ordinary
+notification banners. The F13 implementation was independently written; no code from
+the PolyForm Shield licensed reference was copied. See [lease policy](lease-keep-awake.md)
+and [interruption boundaries](native-session-interruptions.md).
+
+The Windows overlay and Minis package are candidates pending explicit installation
+and physical device acceptance. CI policy tests and IPA compilation do not prove idle
+reset, notification behavior, background scheduling, or historic pending recovery.
+System Automation Running shade research has been stopped and no fix is claimed.

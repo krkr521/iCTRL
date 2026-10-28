@@ -582,7 +582,12 @@ def automation_session(*, legacy_setup=False, ttl_seconds=120, expected_device_k
             return _rpc_call_raw(method, params, timeout=timeout, expected_device=expected_device)
         except SystemExit as error:
             raise OSError("Authenticated transport verification failed; outcome unknown") from error
-    # Schema discovers support only; it is never proof that Focus is active.
+    if not legacy_setup and not legacy_recovery:
+        from managed_autolock import ManagedAutoLock
+        previous = ManagedAutoLock(STATE / "autolock").status(expected_device, "codex-windows")
+        if previous.get("status") != "no_record":
+            raise RuntimeError("LegacyAutoLockRecoveryRequired")
+    # Schema discovers support only; it is never proof of native runtime readiness.
     methods = get_json("/schema").get("methods", [])
     supported = any(m.get("name") == "automation_begin" for m in methods if isinstance(m, dict))
     if not _AUTOMATION_LOCK.acquire(blocking=False):

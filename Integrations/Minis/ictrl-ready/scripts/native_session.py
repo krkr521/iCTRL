@@ -5,11 +5,12 @@ Legacy recovery remains in automation_session.py. Never fall back to it here.
 from __future__ import annotations
 
 import re
+import http.client
 import threading
 import time
 from datetime import datetime
 
-from automation_session import AutomationUnavailable, RestorationUncertain, requires_ui
+from automation_session import AutomationUnavailable, RestorationUncertain, requires_ui, _verification_failure
 
 
 class NativeSession:
@@ -69,9 +70,10 @@ class NativeSession:
         try:
             try:
                 value = self.raw("automation_native_begin", {"ttl_seconds": self.ttl})
-            except (OSError, TimeoutError):
+            except (OSError, http.client.HTTPException) as error:
+                if _verification_failure(error): raise
                 # Observe once; never repeat a possibly accepted Begin.
-                value = self.raw("automation_owner_status", {}).get("native_session")
+                value = self.raw("automation_owner_status", {})
             lease, deadline, stamp = self._validate(value)
             self.lease_id, self.deadline = lease, deadline
             self.local_deadline = min(self.local_deadline, self.clock() + stamp - self.wall())

@@ -6,6 +6,7 @@ class JSONRPCServer {
     private let fileTransfers = FileTransferStore()
     private let nativeSession = NativeAutomationSession()
     var nativeInterruptionGuardAvailable = false
+    var nativeDeviceReady: () -> Bool = { false }
     private let quietControl: QuietControl
     private var listener: NWListener?
     private var connections: [NWConnection] = []
@@ -108,6 +109,8 @@ class JSONRPCServer {
         guard QuietRPCMethodDefinitions.requiresUIGate(method) else { return nil }
         let now = ProcessInfo.processInfo.systemUptime
         if nativeSession.active(now: now) != nil {
+            guard nativeDeviceReady(), quietControl.mode(owner: owner) == "automation",
+                  quietControl.takeoverState(now: now) == "manual_ready" else { nativeSession.revoke(); return .serverError("native_device_locked_or_unavailable") }
             return nativeSession.gate(owner: owner, id: session, now: now) ? nil : .serverError("native_session_owned_or_expired")
         }
         if nativeSession.status(owner: owner, id: session, now: now) != nil, session != nil {
@@ -120,7 +123,12 @@ class JSONRPCServer {
     func revokeNativeSession() { nativeSession.revoke() }
 
     func nativeKeepAwakeLease() -> NativeAutomationSession.Lease? {
-        nativeSession.active(now: ProcessInfo.processInfo.systemUptime)
+        guard let lease = nativeSession.active(now: ProcessInfo.processInfo.systemUptime) else { return nil }
+        guard nativeDeviceReady(), quietControl.mode(owner: lease.owner) == "automation",
+              quietControl.takeoverState(now: ProcessInfo.processInfo.systemUptime) == "manual_ready" else {
+            nativeSession.revoke(); return nil
+        }
+        return lease
     }
 
     func start() throws {
@@ -1260,13 +1268,15 @@ class JSONRPCServer {
                                "keep_awake": .string("f13_lease"), "interruption_policy": .string("explicit_alerts_only"),
                                "notification_suppression": .bool(false)])
             case "automation_native_begin":
-                guard nativeInterruptionGuardAvailable, quietControl.mode(owner: owner) == "automation",
+                guard nativeInterruptionGuardAvailable, nativeDeviceReady(), quietControl.mode(owner: owner) == "automation",
                       quietControl.takeoverState(now: now) == "manual_ready",
                       case .int(let ttl)? = params["ttl_seconds"] else { return error("native_unavailable_or_legacy_recovery_required") }
                 return result(try nativeSession.begin(owner: owner, id: UUID().uuidString, ttl: ttl, now: now, date: Date()))
             case "automation_native_status", "automation_native_heartbeat", "automation_native_end":
                 guard let id = params["lease_id"]?.stringValue else { return error("lease_id required") }
-                if method == "automation_native_heartbeat" { return result(try nativeSession.heartbeat(owner: owner, id: id, now: now)) }
+                if method == "automation_native_heartbeat" {
+                    guard nativeDeviceReady() else { nativeSession.revoke(); return error("native_device_locked_or_unavailable") }
+                    return result(try nativeSession.heartbeat(owner: owner, id: id, now: now)) }
                 if method == "automation_native_end" { return result(try nativeSession.end(owner: owner, id: id, now: now)) }
                 guard let values = nativeSession.status(owner: owner, id: id, now: now) else { return error("native lease not found for owner") }
                 return result(values)

@@ -32,6 +32,8 @@ class TaskState:
 
 
 def begin(manager: ManagedAutoLock, device: str, owner: str, session) -> dict:
+    if getattr(session, "native", False):
+        raise AutoLockNotReady("Native tasks require one complete run; no standalone Settings begin")
     return run_managed(manager, device, owner, AutoLockUI(session.call), ending=False)
 
 

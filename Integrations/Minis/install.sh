@@ -106,7 +106,7 @@ assert expected.issubset(set(os.listdir(scripts)))
 sys.path.insert(0, str(scripts))
 for name in ('automation_session', 'native_session', 'managed_autolock', 'autolock_ui', 'task_context', 'quiet_batch', 'minis_transport', 'task_session'):
     importlib.import_module(name)
-print('Quiet runtime listdir and normal imports verified; no batch executed')
+print('Native12 runtime imports verified; no task executed')
 PY
 }
 check_runtime "$runtime_stage"

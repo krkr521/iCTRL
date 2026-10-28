@@ -1,5 +1,9 @@
 """Offline protocol/safety tests; no claim of device keep-awake acceptance."""
 import sys
+import ast
+import contextlib
+import contextvars
+from unittest import mock
 import tempfile
 import threading
 import unittest
@@ -10,7 +14,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "ictrl-ready/scripts"
 sys.path.insert(0, str(SCRIPTS))
 from native_session import NativeSession
 from automation_session import AutomationUnavailable, RestorationUncertain
-from task_context import managed_task, AutoLockNotReady
+from task_context import managed_task, AutoLockNotReady, begin
 
 
 class Phone:
@@ -54,7 +58,7 @@ class NativeSessionTests(unittest.TestCase):
                                   "automation_native_end"])
         self.assertEqual(phone.calls[-2][1]["automation_session"], "a" * 32)
 
-    def test_unknown_interruption_blocks_input_but_ends(self):
+    def test_nonactive_state_blocks_input_but_ends(self):
         phone = Phone()
         with self.assertRaises(AutomationUnavailable):
             with self.session(phone) as session:
@@ -78,6 +82,23 @@ class NativeSessionTests(unittest.TestCase):
                 session.call("tap", {}, raw=lost)
         self.assertEqual([m for m, p in phone.calls].count("tap"), 1)
 
+    def test_lost_begin_recovers_flat_owner_once_and_ends(self):
+        phone = Phone()
+        def raw(method, params):
+            if method == "automation_native_begin":
+                phone.calls.append((method, params)); raise TimeoutError()
+            if method == "automation_owner_status":
+                phone.calls.append((method, params))
+                return dict(mode="automation", backend="native", state="active", lease_id="a" * 32,
+                            deadline="1970-01-01T00:18:40Z")
+            return phone(method, params)
+        with NativeSession(raw, clock=lambda: 1, wall_clock=lambda: 1000) as session:
+            session.call("tap", {})
+        methods = [m for m, p in phone.calls]
+        self.assertEqual(methods.count("automation_native_begin"), 1)
+        self.assertEqual(methods.count("automation_owner_status"), 1)
+        self.assertEqual(methods[-1], "automation_native_end")
+
     def test_legacy_pending_stays_untouched(self):
         class Manager:
             def status(self, *args): return {"status": "restore_pending"}
@@ -86,6 +107,26 @@ class NativeSessionTests(unittest.TestCase):
             with self.session(phone) as session:
                 with managed_task(Manager(), "device:test", "owner", session): self.fail("body")
         self.assertNotIn("tap", [m for m, p in phone.calls])
+
+    def test_standalone_native_begin_never_opens_settings(self):
+        with self.assertRaises(AutoLockNotReady):
+            begin(None, "device:test", "owner", type("Native", (), {"native": True})())
+
+    def test_windows_all_native_entries_refuse_pending_before_begin(self):
+        source = Path(__file__).resolve().parents[2] / "Windows-Client/control.py"
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "automation_session")
+        namespace = dict(contextlib=contextlib, _AUTOMATION_CONTEXT=contextvars.ContextVar("test", default=None),
+                         identity=lambda: "device:test")
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), str(source), "exec"), namespace)
+        with mock.patch("managed_autolock.ManagedAutoLock.status", return_value={"status": "restore_pending"}):
+            namespace["STATE"] = Path("synthetic")
+            with self.assertRaisesRegex(RuntimeError, "LegacyAutoLockRecoveryRequired"):
+                with namespace["automation_session"](): self.fail("body")
+
+    def test_windows_native_client_stays_in_sync(self):
+        windows = Path(__file__).resolve().parents[2] / "Windows-Client/native_session.py"
+        self.assertEqual(windows.read_bytes(), (SCRIPTS / "native_session.py").read_bytes())
 
     def test_native_context_has_no_autolock_ui(self):
         class Manager:

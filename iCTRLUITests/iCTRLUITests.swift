@@ -352,6 +352,9 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
         // Record WHY the test is ending — this is the main place a silent exit
         // shows up (XCTest tears the test down → server stops).
         Self.logBuffer.append("🚪 tearDownWithError — test ending, stopping server. keepRunning=\(keepRunning)")
+        LockStateMonitor.shared().onLocked = nil
+        leaseKeepAwake?.stop()
+        leaseKeepAwake = nil
         server?.stop()
         server = nil
         actionHandler = nil
@@ -1098,6 +1101,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
     /// XCUITest call can't freeze the network listener (which would drop the whole
     /// service). Serial so actions still run one-at-a-time in order.
     private let rpcQueue = DispatchQueue(label: "com.openminis.ictrl.rpc")
+    private var leaseKeepAwake: LeaseKeepAwake?
 
     /// Consecutive UI-method timeouts. Reset by any UI method that completes.
     private var uiTimeoutStreak = 0
@@ -1449,7 +1453,21 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 }
             }
         }
-        srv.nativeInterruptionGuardAvailable = NativeInterruptionGuard.available
+        let lockMonitor = LockStateMonitor.shared()
+        lockMonitor.onLocked = { [weak srv] in srv?.revokeNativeSession() }
+        srv.nativeInterruptionGuardAvailable = NativeInterruptionGuard.available && ICIdlePulse.isAvailable() && lockMonitor.monitorAvailable
+        srv.nativeDeviceReady = { lockMonitor.monitorAvailable && ICIdlePulse.isAvailable() && !ICIdlePulse.isLockedOrUnknown() }
+        leaseKeepAwake?.stop()
+        let keepAwake = LeaseKeepAwake(queue: rpcQueue, snapshot: { [weak self, weak srv] in
+            guard let self, let srv, self.server === srv, let lease = srv.nativeKeepAwakeLease() else { return nil }
+            return LeaseKeepAwakePolicy.Lease(id: lease.id, deadline: min(lease.deadline, lease.heartbeat))
+        }, isLocked: { ICIdlePulse.isLockedOrUnknown() }, pulse: { [weak srv] in
+            let error = ICIdlePulse.sendF13()
+            if error != nil { srv?.revokeNativeSession() }
+            return error
+        }, log: { Self.logBuffer.append($0) })
+        leaseKeepAwake = keepAwake
+        keepAwake.start()
         srv.onRPCRequest = { [weak self, weak srv] method, params, owner, completion in
             guard let self = self, let srv = srv else {
                 completion(nil, .internalError)
@@ -1557,6 +1575,10 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                             if srv.nativeKeepAwakeLease() != nil,
                                let interruption = handler.nativeInterruptionError(method: method, params: params) {
                                 result = (nil, interruption)
+                            } else if let gateError = srv.quietGateForDequeued(owner: owner, method: method,
+                                session: params?["automation_session"]?.stringValue) {
+                                // Alert inspection may block; revalidate immediately before mutation.
+                                result = (nil, gateError)
                             } else {
                                 result = handler.dispatch(method: method, params: params)
                             }
