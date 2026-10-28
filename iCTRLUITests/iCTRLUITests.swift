@@ -97,6 +97,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
         // (well after unlock).
         app = XCUIApplication(bundleIdentifier: "com.apple.springboard")
 
+        _ = NativeInterruptionGuard.available
         URLSchemeHandler.installURLHandler()
         setupNotifications()
         Self.logBuffer.append("🧩 setUpWithError done (no app.activate)")
@@ -1448,6 +1449,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 }
             }
         }
+        srv.nativeInterruptionGuardAvailable = NativeInterruptionGuard.available
         srv.onRPCRequest = { [weak self, weak srv] method, params, owner, completion in
             guard let self = self, let srv = srv else {
                 completion(nil, .internalError)
@@ -1552,7 +1554,12 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                         result = self.handleConfig(params)
                     } else if let handler = self.actionHandler {
                         let reason = ObjCException.catching {
-                            result = handler.dispatch(method: method, params: params)
+                            if srv.nativeKeepAwakeLease() != nil,
+                               let interruption = handler.nativeInterruptionError(method: method, params: params) {
+                                result = (nil, interruption)
+                            } else {
+                                result = handler.dispatch(method: method, params: params)
+                            }
                         }
                         if let reason = reason {
                             result = (nil, .serverError(

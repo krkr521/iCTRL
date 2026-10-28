@@ -4,6 +4,8 @@ import Network
 
 class JSONRPCServer {
     private let fileTransfers = FileTransferStore()
+    private let nativeSession = NativeAutomationSession()
+    var nativeInterruptionGuardAvailable = false
     private let quietControl: QuietControl
     private var listener: NWListener?
     private var connections: [NWConnection] = []
@@ -39,7 +41,7 @@ class JSONRPCServer {
     var onQuietRestore: ((QuietControl.Restore) -> Void)?
     var onFileTransferNotice: ((FileTransferNotice) -> Void)?
     func suppressFileTransferBanner() -> Bool {
-        quietControl.takeoverState(now: ProcessInfo.processInfo.systemUptime) != "manual_ready"
+        nativeSession.active(now: ProcessInfo.processInfo.systemUptime) != nil || quietControl.takeoverState(now: ProcessInfo.processInfo.systemUptime) != "manual_ready"
     }
     func quietMayRestore(_ request: QuietControl.Restore) -> Bool {
         quietControl.mayRestore(request, now: ProcessInfo.processInfo.systemUptime)
@@ -104,8 +106,21 @@ class JSONRPCServer {
     /// Second gate, called just before queued Runner UI execution.
     func quietGateForDequeued(owner: String, method: String, session: String?) -> JSONRPCError? {
         guard QuietRPCMethodDefinitions.requiresUIGate(method) else { return nil }
+        let now = ProcessInfo.processInfo.systemUptime
+        if nativeSession.active(now: now) != nil {
+            return nativeSession.gate(owner: owner, id: session, now: now) ? nil : .serverError("native_session_owned_or_expired")
+        }
+        if nativeSession.status(owner: owner, id: session, now: now) != nil, session != nil {
+            return .serverError("native_session_not_active")
+        }
         return quietControl.gate(owner: owner, method: method, session: session,
                                  now: ProcessInfo.processInfo.systemUptime).map(JSONRPCError.serverError)
+    }
+
+    func revokeNativeSession() { nativeSession.revoke() }
+
+    func nativeKeepAwakeLease() -> NativeAutomationSession.Lease? {
+        nativeSession.active(now: ProcessInfo.processInfo.systemUptime)
     }
 
     func start() throws {
@@ -169,6 +184,7 @@ class JSONRPCServer {
     }
 
     func stop() {
+        nativeSession.revoke()
         log("🔻 JSONRPCServer.stop called")
         // Nearby teardown belongs on the server queue, where that state lives.
         // Hand over the objects rather than self: stop() also runs from deinit.
@@ -1239,6 +1255,21 @@ class JSONRPCServer {
         }
         do {
             switch method {
+            case "automation_native_capabilities":
+                return result(["native_automation_session": .int(1), "available": .bool(nativeInterruptionGuardAvailable),
+                               "keep_awake": .string("f13_lease"), "interruption_policy": .string("explicit_alerts_only"),
+                               "notification_suppression": .bool(false)])
+            case "automation_native_begin":
+                guard nativeInterruptionGuardAvailable, quietControl.mode(owner: owner) == "automation",
+                      quietControl.takeoverState(now: now) == "manual_ready",
+                      case .int(let ttl)? = params["ttl_seconds"] else { return error("native_unavailable_or_legacy_recovery_required") }
+                return result(try nativeSession.begin(owner: owner, id: UUID().uuidString, ttl: ttl, now: now, date: Date()))
+            case "automation_native_status", "automation_native_heartbeat", "automation_native_end":
+                guard let id = params["lease_id"]?.stringValue else { return error("lease_id required") }
+                if method == "automation_native_heartbeat" { return result(try nativeSession.heartbeat(owner: owner, id: id, now: now)) }
+                if method == "automation_native_end" { return result(try nativeSession.end(owner: owner, id: id, now: now)) }
+                guard let values = nativeSession.status(owner: owner, id: id, now: now) else { return error("native lease not found for owner") }
+                return result(values)
             case "automation_config":
                 if let setting = params["enabled"] {
                     guard local, let requested = setting.boolValue else {
@@ -1254,11 +1285,14 @@ class JSONRPCServer {
                 let registered = try quietControl.register(owner: owner, mode: mode, now: now)
                 return result(["mode": .string(registered), "quiet_available": .bool(quietControl.isAvailable)])
             case "automation_owner_status":
+                if quietControl.takeoverState(now: now) == "manual_ready",
+                   let native = nativeSession.status(owner: owner, now: now) { return result(native) }
                 var values = statusValues()
                 if quietControl.mode(owner: owner) == "manual" {
                     let takeover = quietControl.takeoverState(now: now)
                     values["takeover_state"] = .string(takeover)
-                    values["ui_blocked"] = .bool(takeover != "manual_ready")
+                    values["ui_blocked"] = .bool(takeover != "manual_ready" || nativeSession.active(now: now) != nil)
+                    if nativeSession.active(now: now) != nil { values["takeover_state"] = .string("native_active") }
                     if let diagnostic = quietControl.takeoverDiagnostic(now: now) {
                         values["context_diagnostic"] = .string(diagnostic)
                     }
@@ -1275,6 +1309,7 @@ class JSONRPCServer {
                 guard values["lease_id"] != nil else { return error("lease not found for owner") }
                 return result(values)
             case "automation_begin":
+                guard nativeSession.active(now: now) == nil else { return error("native_session_active") }
                 guard case .int(let ttl)? = params["ttl_seconds"], onQuietShortcutURL != nil else {
                     return error("ttl_seconds integer required or quiet URL launcher unavailable")
                 }
@@ -1304,6 +1339,7 @@ class JSONRPCServer {
                 guard params["mode"]?.stringValue == "manual", quietControl.mode(owner: owner) == "manual" else {
                     return error("explicit manual mode required")
                 }
+                nativeSession.revoke()
                 if let launch = try quietControl.takeover(now: now) {
                     log(QuietDiagnostics.message(.endRequested, action: .end, source: .takeover,
                         state: quietControl.diagnosticState(leaseID: launch.leaseID)))

@@ -455,6 +455,18 @@ class ActionHandler {
             "one of its buttons' centers. Ref/element actions on the app underneath won't work until it is gone.", data: nil)
     }
 
+    /// Native sessions never guess an alert response from a coordinate or generic label.
+    /// An explicit, freshly discovered SpringBoard ref remains available for authorized workflows.
+    func nativeInterruptionError(method: String, params: [String: JSONValue]?) -> JSONRPCError? {
+        guard QuietRPCMethodDefinitions.requiresUIGate(method), systemAlertUp(precise: true) else { return nil }
+        let command = ActionCommand(method: method, params: params)
+        if method == "tap", let ref = command.ref, let target = refStore[ref],
+           target.bundleId == "com.apple.springboard", let title = refAlertTitle[ref],
+           title == alertTitle(), nowMonotonic - target.createdAt < 15 { return nil }
+        return JSONRPCError(code: -32041, message: "interruption_requires_explicit_target: system alert blocks native automation. No button was chosen. Inspect the alert and use a fresh explicit SpringBoard button ref only within the authorized task.",
+                            data: ["mutation_started": .bool(false), "notification_suppression": .bool(false)])
+    }
+
     func dispatch(method: String, params: [String: JSONValue]?) -> ([String: JSONValue]?, JSONRPCError?) {
         #if DEBUG
         if method == "shade_system_artifact" {
