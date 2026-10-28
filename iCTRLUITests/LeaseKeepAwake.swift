@@ -43,7 +43,10 @@ final class LeaseKeepAwake {
     func stop() {
         lifecycleLock.lock(); generation &+= 1; lifecycleLock.unlock()
         queue.async { [weak self] in
-            self?.timer?.cancel(); self?.timer = nil; self?.policy.stop()
+            guard let self else { return }
+            self.timer?.cancel(); self.timer = nil; self.policy.stop()
+            if self.observedLease != nil { self.log("F13 keep-awake explicitly stopped") }
+            self.observedLease = nil
         }
     }
 

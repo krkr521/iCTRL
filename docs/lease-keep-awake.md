@@ -58,7 +58,9 @@ Apple documents the F13 key constant:
 https://developer.apple.com/documentation/xcuiautomation/xcuikeyboardkey/f13
 Apple's public key constant does not establish that `XCDeviceEvent` or
 `performDeviceEvent:error:` is supported on iOS, or that a key refreshes cross-app
-idle time. The bridge dynamically checks these private selectors, catches Objective-C
+idle time. `ICIdlePulse.isAvailable()` only inspects both selectors and runtime ABI signatures;
+it neither creates nor submits a device event. Capabilities must require it. The
+bridge rechecks the exact ABI before injection, catches Objective-C
 exceptions and fails closed. It does not fall back to touches, Settings, or brightness.
 
 ## Validation boundary

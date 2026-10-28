@@ -2,8 +2,36 @@
 #import <XCTest/XCTest.h>
 #import <objc/message.h>
 #import <notify.h>
+#import <string.h>
+
+// Ignore Objective-C ownership/direction qualifiers; preserve the underlying ABI.
+static const char *ICUnqualified(const char *type) {
+    while (*type && strchr("rnNoORV", *type)) ++type;
+    return type;
+}
 
 @implementation ICIdlePulse
++ (BOOL)isAvailable {
+    Class factory = NSClassFromString(@"XCDeviceEvent");
+    SEL creation = NSSelectorFromString(@"deviceEventWithPage:usage:duration:");
+    SEL submission = NSSelectorFromString(@"performDeviceEvent:error:");
+    id device = XCUIDevice.sharedDevice;
+    if (!factory || ![factory respondsToSelector:creation] || ![device respondsToSelector:submission]) return NO;
+    @try {
+        NSMethodSignature *make = [factory methodSignatureForSelector:creation];
+        NSMethodSignature *send = [device methodSignatureForSelector:submission];
+        if (!make || !send || make.numberOfArguments != 5 || send.numberOfArguments != 4) return NO;
+        const char *result = ICUnqualified(send.methodReturnType);
+        return strcmp(ICUnqualified(make.methodReturnType), "@") == 0
+            && strcmp(ICUnqualified([make getArgumentTypeAtIndex:2]), "I") == 0
+            && strcmp(ICUnqualified([make getArgumentTypeAtIndex:3]), "I") == 0
+            && strcmp(ICUnqualified([make getArgumentTypeAtIndex:4]), "d") == 0
+            && (strcmp(result, "B") == 0 || strcmp(result, "c") == 0)
+            && strcmp(ICUnqualified([send getArgumentTypeAtIndex:2]), "@") == 0
+            && strcmp(ICUnqualified([send getArgumentTypeAtIndex:3]), "^@") == 0;
+    } @catch (__unused NSException *exception) { return NO; }
+}
+
 + (BOOL)isLockedOrUnknown {
     // Query the initial value too: the older monitor defaults to unlocked until
     // its first notification and is unsuitable as a keep-awake admission guard.
@@ -16,7 +44,7 @@
 }
 
 + (NSString *)sendF13 {
-    if (![NSThread isMainThread] || [self isLockedOrUnknown]) return @"not_admitted";
+    if (![NSThread isMainThread] || ![self isAvailable] || [self isLockedOrUnknown]) return @"not_admitted";
     @try {
         // Private XCTest selectors, discovered at runtime. This is an independent
         // implementation; Apple documents F13 but does not promise idle reset.
