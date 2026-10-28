@@ -1254,6 +1254,11 @@ class JSONRPCServer {
                     if let diagnostic = quietControl.takeoverDiagnostic(now: now) {
                         values["context_diagnostic"] = .string(diagnostic)
                     }
+                    let inspection = quietControl.manualInspectionAvailability(owner: owner, now: now)
+                    values["inspect_ready"] = .bool(inspection.ready)
+                    if let wait = inspection.waitSeconds {
+                        values["inspect_wait_seconds"] = .int(wait)
+                    }
                 }
                 return result(values)
             case "automation_status":

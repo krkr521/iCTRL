@@ -89,3 +89,23 @@ restore call has no safe cancellation hook and must not be retried after a
 timeout. Its return value does not establish physical screen state; the system
 overlay is omitted from XCTest screenshots. No automatic shade policy is
 enabled by this build.
+
+Version `1.98.13-krkr.native9` separates foreground activation admission from
+post-activation fresh PID confirmation while retaining the existing callback,
+lease and restoration limits. Manual owner status reports relative recovery
+check availability. `runtime_status` and `device_info` also return the OS's
+version/build description to support investigation against matching firmware.
+This build does not claim to fix the system Automation Running shade fading
+during synthesized input; physical display behavior still needs a verified
+system interface and direct observation.
+
+Debug builds additionally expose `shade_system_artifact` for matching-build
+offline investigation. It accepts only `artifact: automation_ui`, referring to
+one fixed Apple AutomationModeUI executable. It uses ordinary sandbox file
+access, checks a regular Mach-O file through the same open handle, limits the
+file to 2 MiB and each encrypted chunk to 48 KiB, and returns only metadata by
+default. Arbitrary paths, other app data and unknown parameters are rejected.
+Denied/missing/oversized reads return finite status values; there is no fallback
+path, permission bypass or system write. No binary payload or error description
+is written to the diagnostic log. Extracted Apple binaries are private local
+research artifacts and must not be included in this repository or releases.

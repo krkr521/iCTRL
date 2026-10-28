@@ -95,6 +95,29 @@ prove that a particular device transition is transient or that a real app has
 been restored. `QuietForegroundCaptureTests` covers candidate mismatch,
 read-gate cancellation, stability, and the existing lease boundaries.
 
+## Foreground restoration timing
+
+Native9 separates the original two-second activation admission from a fresh
+two-second confirmation interval after that one admitted activation returns.
+An application that takes time to activate no longer consumes all of its own
+PID proof interval. The existing callback restoration window of eight seconds,
+Begin TTL, owner, server identity and nonce checks remain hard limits throughout;
+the new interval cannot renew or extend them.
+
+The already-foreground path also requires two new named-target/frontmost PID
+matches at least 100 ms apart. Each synchronous PID read is bracketed by fresh
+authorization and monotonic-clock checks. Late reads, clock reversal, a changed
+app, or loss of the original lease fail closed. Activation is never retried.
+Only fixed phase/reason/evidence enums are added to logs; no PID, app name,
+nonce, callback data or exception text is logged by this policy.
+
+Registered manual clients additionally receive advisory `inspect_ready` and,
+when meaningful, `inspect_wait_seconds` from `automation_owner_status`.
+The relative wait exposes no other client's identity or lease identifier.
+`automation_inspect` still enforces the original deadline-plus-300-seconds rule
+and checks its own current state; displayed eligibility grants no authority.
+These fields do not schedule or retry a recovery check.
+
 ## Limits requiring device acceptance
 
 Confirm on this iOS build that Shortcuts exposes Get Current Focus and Set Focus Until Date, can receive the URL text while locked/backgrounded, and can POST to the Runner's loopback port. Confirm real message-banner behavior while the target app is visible and on manual takeover. Opening a Shortcut URL or obtaining HTTP 204 alone is insufficient. If Begin was still running or its callback was lost, an early End `off` report does not prove that Begin cannot turn Focus on later. The server retains `restoration_pending` and blocks manual UI until the deadline plus safety margin and a fresh inspection reports off or preserved user Focus. Same-name off/on (ABA) by the user remains unobservable. Physical touch pause is not implemented.

@@ -153,6 +153,21 @@ final class QuietControl {
         return lease?.state == .ended ? nil : contextDiagnostic
     }
 
+    /// Safe relative availability for the registered manual client. This is
+    /// advisory only: inspectForManual rechecks every admission condition.
+    func manualInspectionAvailability(owner: String, now: TimeInterval) -> (ready: Bool, waitSeconds: Int?) {
+        lock.lock(); defer { lock.unlock() }
+        guard now.isFinite else { return (false, nil) }
+        expire(now)
+        guard modes[owner] == "manual", !storageFailed,
+              let value = lease, value.state == .restorationPending else { return (false, nil) }
+        let remaining = value.deadline + 300 - now
+        if remaining > 0 {
+            return (false, Int(ceil(min(remaining, 600))))
+        }
+        return (!value.hasPendingCallback, value.hasPendingCallback ? nil : 0)
+    }
+
     private func shortcutURL(name: String, action: String, nonce: String, deadline: String) throws -> URL {
         var input = ["action": action, "nonce": nonce, "deadline": deadline,
                      "callback": "http://127.0.0.1:\(port)/quiet-callback"]

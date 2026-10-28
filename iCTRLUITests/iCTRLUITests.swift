@@ -1210,6 +1210,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
         let expiry = ProvisioningExpiry.currentISO8601()
         result["server_running"] = .bool(server?.isRunning ?? false)
         result["server_version"] = .string(RPCMethodRegistry.serverVersion)
+        result["system_version_description"] = .string(ProcessInfo.processInfo.operatingSystemVersionString)
         result["ddi_mounted"] = .bool(DeveloperDiskImage.status().isMounted)
         result["runner_profile_expires_at"] = expiry.map(JSONValue.string) ?? .null
         result["runner_profile_expiry_available"] = .bool(expiry != nil)
@@ -1334,8 +1335,11 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                 // Do not name a transition PID through the normal learned cache:
                 // XCTest app state and activeApplications can briefly disagree.
                 let beforePID = ForegroundApp.frontmostPID()
+                guard self.server === srv, srv.quietMayRestore(request) else { return }
                 let shortcutsPID = ForegroundApp.processID(forBundleID: "com.apple.shortcuts")
+                guard self.server === srv, srv.quietMayRestore(request) else { return }
                 let targetPIDBefore = ForegroundApp.processID(forBundleID: target)
+                guard self.server === srv, srv.quietMayRestore(request) else { return }
                 guard beforePID > 0,
                       (beforePID == shortcutsPID || beforePID == targetPIDBefore) else {
                     _ = srv.quietFinishRestoration(request, succeeded: false,
@@ -1343,32 +1347,28 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                     srv.quietLog(.restoreFinished, action: request.action, leaseID: request.leaseID, reason: .foregroundChangedDuringHelper)
                     return
                 }
-                // One action only. Its time counts against the confirmation budget;
-                // Home's normal RPC includes polling and a fallback, so do not call
-                // that complete RPC inside main.sync and then start a second wait.
-                let started = ProcessInfo.processInfo.systemUptime
-                var proof = QuietForegroundConfirmation(startedAt: started, budget: 2)
+                // Keep the original action-admission cap. An admitted action's
+                // synchronous return does not spend the fresh confirmation phase.
+                // The original quietMayRestore window/TTL/nonce remains decisive.
+                var restoration = QuietForegroundRestorationPolicy(startedAt: ProcessInfo.processInfo.systemUptime)
                 var opened = beforePID == targetPIDBefore
                 var changedBeforeAction = false
                 var expiredBeforeAction = false
                 if !opened {
-                    guard srv.quietMayRestore(request) else { return }
+                    guard self.server === srv, srv.quietMayRestore(request) else { return }
                     let exception = DispatchQueue.main.sync {
                         ObjCException.catching {
-                            // Recheck after waiting for the main queue: a user's
-                            // switch must not be undone by this queued action.
-                            guard srv.quietMayRestore(request) else { return }
+                            guard self.server === srv, srv.quietMayRestore(request) else { return }
                             let latestPID = ForegroundApp.frontmostPID()
+                            guard self.server === srv, srv.quietMayRestore(request) else { return }
                             guard latestPID > 0,
                                   (latestPID == beforePID || latestPID == targetPIDBefore) else {
                                 changedBeforeAction = true
                                 return
                             }
-                            // A queued action must not start after the budget expires.
-                            // Once started, synchronous XCTest activation cannot be cancelled.
-                            guard srv.quietMayRestore(request),
-                                  proof.permitsAction(now: ProcessInfo.processInfo.systemUptime) else {
-                                expiredBeforeAction = true
+                            guard restoration.admitActivation(authorized: self.server === srv && srv.quietMayRestore(request),
+                                now: ProcessInfo.processInfo.systemUptime) else {
+                                expiredBeforeAction = restoration.failure == .actionAdmissionExpired
                                 return
                             }
                             opened = target == "com.apple.springboard"
@@ -1377,31 +1377,47 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
                         }
                     }
                     if exception != nil { opened = false }
+                    if restoration.phase == .activating {
+                        _ = restoration.activationReturned(accepted: opened, authorized: self.server === srv && srv.quietMayRestore(request),
+                            now: ProcessInfo.processInfo.systemUptime)
+                    }
+                } else {
+                    _ = restoration.alreadyForeground(authorized: self.server === srv && srv.quietMayRestore(request),
+                        now: ProcessInfo.processInfo.systemUptime)
                 }
                 var confirmed = false
                 var diagnostic = changedBeforeAction ? "foreground_changed_before_restore"
-                    : (expiredBeforeAction ? "foreground_restore_budget_expired" : "foreground_activation_rejected")
-                if opened {
-                    // Resolve the target itself afresh, never infer its identity
-                    // from whichever PID happened to become frontmost.
-                    diagnostic = "foreground_target_pid_unavailable"
-                    while srv.quietMayRestore(request) {
+                    : (expiredBeforeAction ? "foreground_restore_budget_expired" : restoration.legacyContextDiagnostic)
+                if opened, restoration.phase == .confirming {
+                    while restoration.beginObservation(authorized: self.server === srv && srv.quietMayRestore(request),
+                        now: ProcessInfo.processInfo.systemUptime) {
                         let targetPID = ForegroundApp.processID(forBundleID: target)
+                        guard restoration.mayContinueObservation(authorized: self.server === srv && srv.quietMayRestore(request),
+                            now: ProcessInfo.processInfo.systemUptime) else { break }
                         let frontmostPID = ForegroundApp.frontmostPID()
-                        if targetPID > 0 { diagnostic = "foreground_pid_unconfirmed" }
-                        let outcome = proof.observe(targetPID: targetPID, frontmostPID: frontmostPID,
-                                                    now: ProcessInfo.processInfo.systemUptime)
-                        if outcome == .confirmed { confirmed = true; break }
-                        if outcome == .expired { break }
-                        Thread.sleep(forTimeInterval: 0.1)
+                        let outcome = restoration.finishObservation(targetPID: targetPID, frontmostPID: frontmostPID,
+                            authorized: self.server === srv && srv.quietMayRestore(request),
+                            now: ProcessInfo.processInfo.systemUptime)
+                        if outcome == .confirmed {
+                            confirmed = restoration.mayCommit(authorized: self.server === srv && srv.quietMayRestore(request),
+                                now: ProcessInfo.processInfo.systemUptime)
+                            break
+                        }
+                        if case .failed = outcome { break }
+                        Thread.sleep(forTimeInterval: QuietForegroundRestorationPolicy.pollInterval)
                     }
-                    guard srv.quietMayRestore(request) else { return }
+                    diagnostic = restoration.legacyContextDiagnostic
+                }
+                guard self.server === srv, srv.quietMayRestore(request) else {
+                    Self.logBuffer.append(restoration.safeDiagnosticLine)
+                    return
                 }
                 let accepted = srv.quietFinishRestoration(request, succeeded: confirmed,
                                                             diagnostic: confirmed ? nil : diagnostic)
                 if accepted {
                     srv.quietLog(.restoreFinished, action: request.action, leaseID: request.leaseID,
                                  reason: confirmed ? nil : QuietDiagnostics.Reason(context: diagnostic))
+                    Self.logBuffer.append(restoration.safeDiagnosticLine)
                 }
             }
         }
@@ -1452,7 +1468,7 @@ final class iCTRLUITests: XCTestCase, UNUserNotificationCenterDelegate {
 
             // Non-UI methods take their own lane so diagnosis and recovery stay
             // available while the serial UI queue is wedged.
-            let isUIMethod = !Self.nonUIMethods.contains(method)
+            let isUIMethod = !Self.nonUIMethods.contains(method) && !DevelopmentRPCMethods.readOnlyNames.contains(method)
             let queue = isUIMethod ? self.rpcQueue : self.nonUIQueue
             // Read-only polls (a log viewer pulling `logs`, a client list
             // re-reading `config`) would otherwise fill the very log being

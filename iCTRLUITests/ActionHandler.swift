@@ -457,6 +457,10 @@ class ActionHandler {
 
     func dispatch(method: String, params: [String: JSONValue]?) -> ([String: JSONValue]?, JSONRPCError?) {
         #if DEBUG
+        if method == "shade_system_artifact" {
+            guard let request = ShadeArtifactRequest(params ?? [:]) else { return (nil, .invalidParams) }
+            return (ShadeArtifactReader.read(request), nil)
+        }
         if method == "shade_probe" {
             let arguments = params ?? [:]
             guard arguments.keys.allSatisfy({ $0 == "attempt_restore" }),
@@ -1418,6 +1422,7 @@ class ActionHandler {
             "device_name": .string(device.name),
             "model": .string(device.model),
             "system_version": .string(device.systemVersion),
+            "system_version_description": .string(ProcessInfo.processInfo.operatingSystemVersionString),
             // Server identity + capabilities — a client gets device info AND what
             // this server supports from a single device_info call (no /schema fetch
             // needed for feature detection).

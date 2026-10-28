@@ -1,9 +1,23 @@
 import Foundation
 
 enum DevelopmentRPCMethods {
+    static var readOnlyNames: Set<String> {
+        #if DEBUG
+        return ["shade_system_artifact"]
+        #else
+        return []
+        #endif
+    }
     static var methods: [RPCMethodDef] {
         #if DEBUG
         return [RPCMethodDef(
+            name: "shade_system_artifact",
+            description: "Debug-only, authenticated and read-only: read the single fixed Apple AutomationModeUI Mach-O through ordinary sandbox access. No arbitrary paths, app files, writes or permission bypass. Metadata only by default; max file2MiB/chunk48KiB. Stop on unavailable/denied/oversize. Binary chunks are for local matching-build investigation, not proof of shade behavior.",
+            params: [RPCParamDef(name: "artifact", type: "string", required: true, description: "Exactly automation_ui; never a path"),
+                     RPCParamDef(name: "offset", type: "integer", required: false, description: "0..2097152; default0"),
+                     RPCParamDef(name: "length", type: "integer", required: false, description: "0(metadata only)..49152; default0")],
+            returns: "{artifact,system_version_description,status,size?,offset?,length?,data_base64?,eof?}"
+        ), RPCMethodDef(
             name: "shade_probe",
             description: "Development-only inspection of the existing XCTest automation session. Explicit attempt_restore=true permits one synchronous restore experiment per Runner lifetime; never retry after a timeout. A successful return does not prove physical display state.",
             params: [RPCParamDef(name: "attempt_restore", type: "boolean", required: false,
