@@ -170,7 +170,7 @@ class StartCancelled(Exception):
 
 
 def worker(base, task, store_key, client_path=None, *, ttl_seconds=300, session_cls=None, manager_cls=None, managed=None, loader=None, clock=time.monotonic, sleep=time.sleep):
-    from automation_session import AutomationSession
+    from native_session import NativeSession as AutomationSession
     from managed_autolock import ManagedAutoLock
     from task_context import managed_task
     if loader is None:

@@ -1,6 +1,6 @@
 ---
 name: ictrl-ready
-description: Minis 通过已有配对操控本机 iCTRL；一次完整 UI 任务共用静音和自动锁屏会话，只读查询不跳快捷指令。
+description: Minis 通过已有配对操控本机 iCTRL；一次完整 UI 任务共用 Native12 F13 保活会话，不修改 Focus 或自动锁定设置。
 ---
 
 使用当前 HOME 的 Minis 专用配对，不借 Windows 或浏览器身份、不新建配对、不改 VPN。手机锁定时请用户解锁，密码只在手机输入。
@@ -27,7 +27,7 @@ python3 -B "$HOME/.ictrl/runtime/quiet_batch.py" /path/read.json --store-key 'de
 
 ## 一次完整 UI 任务
 
-读界面、模型思考、点击和后续多个 shell 调用必须共用一个 `task_session.py` worker。一次任务只开始一次 Quiet、管理一次 Auto-Lock，结束时先恢复 Auto-Lock 再结束 Quiet。不要按每个点击、截图或短批启动新任务。
+读界面、模型思考、点击和后续多个 shell 调用必须共用一个 `task_session.py` worker。一次任务只开始一次 Native12 lease，由 worker 每 5 秒发送认证心跳；服务端约 15 秒收不到心跳会停止保活。正常任务不打开 Settings，不改 Auto-Lock，不切 Focus，不运行静音快捷指令。不要按每个点击、截图或短批启动新任务。
 
 1. 开始前生成并保存一个随机 32 位十六进制 `task_id`。后续每条命令都带同一个 ID，不能把随机 ID 生成式直接放进可重复执行的 start。每个 UI 请求也预先保存独立的 32 位十六进制 `request_id`。
 2. 用已有 `device:<id>` 开始：
@@ -56,14 +56,16 @@ python3 -B "$HOME/.ictrl/runtime/task_session.py" finish --task-id TASK_ID
 python3 -B "$HOME/.ictrl/runtime/task_session.py" status --task-id TASK_ID
 ```
 
-`stop_requested` 或 `stopping` 不是恢复完成。只有 `complete` 且 `restore` 为 `restored`、`already_never`、`user_value_preserved`、`no_record` 或 `not_required` 才算已确认收尾。`unknown/pending` 保留原记录，停止 UI，不重新 Begin、不自动 inspect、不杀 Runner。静音回执不明时按服务器原有人工恢复流程处理。
+`stop_requested` 或 `stopping` 不是恢复完成。只有 `complete` 且 `restore` 为 `restored`、`already_never`、`user_value_preserved`、`no_record` 或 `not_required` 才算已确认收尾。`unknown/pending` 保留原记录，停止 UI，不重新 Begin、不自动 inspect、不杀 Runner。旧 Quiet 回执不明时保留 pending，按原有明确恢复流程处理，不能直接开启新版会话掩盖记录。
 
 ## 时间、恢复与能力边界
 
-Native 整个 lease 最长 300 秒，从 Begin 开始计时；start 的 TTL 默认 240 秒，可显式指定 1–300 秒。75 秒及以下不足以留下正文预算，会在 Begin 前拒绝；准备后余量不足 75 秒时不进入 Auto-Lock 和任务 UI。默认 240 是为五分钟上界留余量，故障根因尚未确认。相同 task ID 的 TTL 必须一致，旧状态缺少 TTL 按 300 秒解释。worker 提前保留 75 秒恢复时间，status 的 `remaining_body_seconds` 是剩余可接单时间；准备本身也会消耗时间。预算不足就 finish 并汇报已完成部分，不自动续租、不连续开新会话维持长任务。75 秒是待真机验证的保守预留，不是恢复耗时保证。
+Native 整个 lease 最长 300 秒，从 Begin 开始计时；start 的 TTL 默认 240 秒，可显式指定 1–300 秒。75 秒及以下不足以留下正文预算，会在 Begin 前拒绝；准备后余量不足 75 秒时不进入任务 UI。默认 240 是为五分钟上界留余量，故障根因尚未确认。相同 task ID 的 TTL 必须一致，旧状态缺少 TTL 按 300 秒解释。worker 提前保留 75 秒恢复时间，status 的 `remaining_body_seconds` 是剩余可接单时间；准备本身也会消耗时间。预算不足就 finish 并汇报已完成部分，不自动续租、不连续开新会话维持长任务。75 秒是待真机验证的保守预留，不是恢复耗时保证。
 
-Auto-Lock 原值必须从手机实际设置读取并保存，任务中按需设为永不；结束时恢复真实原值，用户中途改成别的值时保留用户改动。不要写死三分钟，不删除 `~/.ictrl/autolock` 或 `~/.ictrl/tasks` 掩盖 pending。新运行时不读取 Windows 的状态。
+新版任务不读取或写入系统 Auto-Lock。开始时只检查本地旧记录；存在任何旧 Auto-Lock 记录时停止并明确恢复，不删除 `~/.ictrl/autolock` 或 `~/.ictrl/tasks` 掩盖 pending。新运行时不读取 Windows 的状态。旧恢复模块保留供明确恢复使用。
 
 Minis 的停止按钮尚未与 worker 原生取消事件联动：能执行清理时先 finish；仅按停止不能保证立即恢复。进程崩溃/被系统挂起时也不能保证立即收尾，不能据 helper 安装成功或离线测试声称后台链路已通过真机验收。普通 Agent 任务不用手动终端替代实际 Agent 验收；交互终端与 Agent 的后台保活不同。
 
-手动网页使用独立身份；本技能不改变手动通知策略。不解决 Automation Running 遮罩闪亮和物理触摸自动暂停。
+必须通过认证的 `automation_native_capabilities` 确认 Native12、F13 lease、显式弹窗策略及当前 available；旧 Runner 明确拒绝，不自动回退 Settings/Quiet。XCTest 仅处理实际阻挡交互的预期弹窗，未知弹窗阻断后续输入；它不能保证屏蔽普通通知横幅，也不提供静音保证。F13 依赖私有 XCTest 能力，编译成功不等于本机保活已验收。手机锁定时停止并请用户解锁。
+
+手动网页使用独立身份；本技能不改变手动通知策略。Automation Running 遮罩闪亮研究已停止，此包不宣称解决遮罩或物理触摸自动暂停。

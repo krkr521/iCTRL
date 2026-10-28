@@ -54,6 +54,14 @@ def end(manager: ManagedAutoLock, device: str, owner: str, session) -> dict:
 
 @contextmanager
 def managed_task(manager: ManagedAutoLock, device: str, owner: str, session):
+    if getattr(session, "native", False):
+        previous = manager.status(device, owner)
+        if previous.get("status") != "no_record":
+            raise AutoLockNotReady("Legacy Auto-Lock record requires explicit recovery; unchanged")
+        yield TaskState(start={"status": "native_ready", "pending": False},
+                        end={"status": "not_required", "pending": False},
+                        restore_status="not_required")
+        return
     state = TaskState()
     task_error = None
     body_entered = False

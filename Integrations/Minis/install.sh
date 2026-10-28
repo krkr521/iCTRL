@@ -91,7 +91,7 @@ curl -q -fsS --noproxy 127.0.0.1 --connect-timeout 2 --max-time 15 \
 printf '%s  %s\n' "$client_sha" "$stage/ictrl_rpc.py" | sha256sum -c - >/dev/null
 runtime_stage="$stage/runtime"
 mkdir -m 700 "$runtime_stage"
-for file in ensure-ictrl.sh quiet_batch.py automation_session.py managed_autolock.py autolock_ui.py task_context.py minis_transport.py task_session.py; do
+for file in ensure-ictrl.sh quiet_batch.py automation_session.py native_session.py managed_autolock.py autolock_ui.py task_context.py minis_transport.py task_session.py; do
   cp "$stage/ictrl-ready/scripts/$file" "$runtime_stage/$file"
 done
 chmod 700 "$runtime_stage/ensure-ictrl.sh"
@@ -100,11 +100,11 @@ check_runtime() {
 python3 -B - "$1" <<'PY'
 import importlib, os, pathlib, sys
 scripts = pathlib.Path(sys.argv[1])
-expected = {'ensure-ictrl.sh', 'quiet_batch.py', 'automation_session.py',
+expected = {'ensure-ictrl.sh', 'quiet_batch.py', 'automation_session.py', 'native_session.py',
             'managed_autolock.py', 'autolock_ui.py', 'task_context.py', 'minis_transport.py', 'task_session.py'}
 assert expected.issubset(set(os.listdir(scripts)))
 sys.path.insert(0, str(scripts))
-for name in ('automation_session', 'managed_autolock', 'autolock_ui', 'task_context', 'quiet_batch', 'minis_transport', 'task_session'):
+for name in ('automation_session', 'native_session', 'managed_autolock', 'autolock_ui', 'task_context', 'quiet_batch', 'minis_transport', 'task_session'):
     importlib.import_module(name)
 print('Quiet runtime listdir and normal imports verified; no batch executed')
 PY
