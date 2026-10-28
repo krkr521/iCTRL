@@ -27,7 +27,7 @@ python3 -B "$HOME/.ictrl/runtime/quiet_batch.py" /path/read.json --store-key 'de
 
 ## 一次完整 UI 任务
 
-读界面、模型思考、点击和后续多个 shell 调用必须共用一个 `task_session.py` worker。一次任务只开始一次 Native12 lease，由 worker 每 5 秒发送认证心跳；服务端约 15 秒收不到心跳会停止保活。正常任务不打开 Settings，不改 Auto-Lock，不切 Focus，不运行静音快捷指令。不要按每个点击、截图或短批启动新任务。
+读界面、模型思考、点击和后续多个 shell 调用必须共用一个 `task_session.py` worker。一次任务只开始一次 Native12 lease，由 worker 每 5 秒发送认证心跳；服务端约 15 秒收不到心跳会撤销任务 UI 授权。正常任务不打开 Settings，不改 Auto-Lock，不切 Focus，不运行静音快捷指令。不要按每个点击、截图或短批启动新任务。
 
 1. 开始前生成并保存一个随机 32 位十六进制 `task_id`。后续每条命令都带同一个 ID，不能把随机 ID 生成式直接放进可重复执行的 start。每个 UI 请求也预先保存独立的 32 位十六进制 `request_id`。
 2. 用已有 `device:<id>` 开始：
@@ -69,3 +69,7 @@ Minis 的停止按钮尚未与 worker 原生取消事件联动：能执行清理
 必须通过认证的 `automation_native_capabilities` 确认 Native12、F13 lease、显式弹窗策略及当前 available；旧 Runner 明确拒绝，不自动回退 Settings/Quiet。XCTest 仅处理实际阻挡交互的预期弹窗，未知弹窗阻断后续输入；它不能保证屏蔽普通通知横幅，也不提供静音保证。F13 依赖私有 XCTest 能力，编译成功不等于本机保活已验收。手机锁定时停止并请用户解锁。
 
 手动网页使用独立身份；本技能不改变手动通知策略。Automation Running 遮罩闪亮研究已停止，此包不宣称解决遮罩或物理触摸自动暂停。
+
+Native14 的已知能力契约为 `keep_awake:f13_service`、`keep_awake_scope:runner_service`、`ui_control_scope:owner_lease`。Runner 服务/Automation Running 就绪后，即使未连接或任务结束，仍每10秒 F13 保活；服务停止才停止该保活并恢复系统既有3分钟自然锁屏行为。手动锁屏有效，锁态未知时暂停；解锁后服务保活可恢复，但旧任务 lease 永不复活。Native12/13 的 `f13_lease` 旧契约仍可识别；未知契约拒绝。
+
+服务 pulse 或 `service_keep_awake_running:true` 不是任务授权。UI 仍必须有本身份的 active lease、有效 TTL 与心跳；End/TTL/失联只撤销任务 UI，不应报告为 Native14 服务 F13 已停止。不要靠持续保活擅自续租或沿用 ended/expired lease。

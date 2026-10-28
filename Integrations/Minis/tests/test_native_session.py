@@ -105,6 +105,33 @@ class NativeSessionTests(unittest.TestCase):
         self.assertNotIn("tap", methods)
         self.assertNotIn("automation_native_end", methods)
 
+    def test_service_keepawake_does_not_extend_ui_authorization(self):
+        phone = Phone()
+        def raw(method, params):
+            value = phone(method, params)
+            if method == "automation_native_capabilities":
+                value.update(keep_awake="f13_service", keep_awake_scope="runner_service", ui_control_scope="owner_lease")
+            if method == "automation_native_status":
+                value.update(state="expired", service_keep_awake_running=True)
+            return value
+        with self.assertRaises(AutomationUnavailable):
+            with NativeSession(raw, clock=lambda: 1, wall_clock=lambda: 1000) as session:
+                self.assertEqual(session.keep_awake_scope, "runner_service")
+                session.call("tap", {})
+        self.assertNotIn("tap", [m for m, p in phone.calls])
+        self.assertEqual(phone.calls[-1][0], "automation_native_end")
+
+    def test_service_scope_requires_explicit_owner_lease_contract(self):
+        phone = Phone()
+        def raw(method, params):
+            value = phone(method, params)
+            if method == "automation_native_capabilities":
+                value.update(keep_awake="f13_service", keep_awake_scope="runner_service")
+            return value
+        with self.assertRaises(AutomationUnavailable):
+            with NativeSession(raw): self.fail("body")
+        self.assertNotIn("automation_native_begin", [m for m, p in phone.calls])
+
     def test_existing_owner_lease_is_not_adopted(self):
         phone = Phone()
         def raw(method, params):

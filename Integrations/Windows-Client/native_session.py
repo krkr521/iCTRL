@@ -1,4 +1,4 @@
-"""Native12 task lease: no Settings writes and no Focus/Shortcuts changes.
+"""Native owner UI lease with separately discovered F13 lifecycle.
 
 Legacy recovery remains in automation_session.py. Never fall back to it here.
 """
@@ -24,6 +24,7 @@ class NativeSession:
         self.lease_id = self.deadline = None
         self.legacy = False
         self.cleanup_error = None
+        self.keep_awake_scope = "unknown"
         self._entered = False
         self._stop = threading.Event()
         self._thread = None
@@ -58,10 +59,17 @@ class NativeSession:
         self._entered = True
         caps = self.raw("automation_native_capabilities", {})
         expected = {"available": True, "native_automation_session": 1,
-                    "keep_awake": "f13_lease", "interruption_policy": "explicit_alerts_only",
-                    "notification_suppression": False}
+                    "interruption_policy": "explicit_alerts_only", "notification_suppression": False}
         if not isinstance(caps, dict) or any(caps.get(k) != v for k, v in expected.items()):
-            raise AutomationUnavailable("native12 capabilities required; no legacy fallback")
+            raise AutomationUnavailable("native automation capabilities unavailable; inspect authenticated readiness")
+        policy = caps.get("keep_awake")
+        if policy == "f13_lease":
+            self.keep_awake_scope = "owner_lease"
+        elif (policy == "f13_service" and caps.get("keep_awake_scope") == "runner_service"
+              and caps.get("ui_control_scope") == "owner_lease"):
+            self.keep_awake_scope = "runner_service"
+        else:
+            raise AutomationUnavailable("known F13 lifecycle and owner-lease UI contract required")
         registered = self.raw("automation_register", {"mode": "automation"})
         if registered.get("mode") != "automation":
             raise AutomationUnavailable("automation registration unavailable")
