@@ -39,7 +39,8 @@ struct NativeDeviceReadiness {
 enum NativeControlAdmission {
     static func error(sessions: NativeAutomationSession, owner: String, id: String?, now: TimeInterval,
                       readiness: () -> NativeDeviceReadiness, mode: (String) -> String,
-                      legacyReady: () -> Bool, serviceReady: (UInt64) -> Bool) -> String? {
+                      legacyReady: () -> Bool, serviceReady: (UInt64) -> Bool,
+                      recheckNow: (() -> TimeInterval)? = nil) -> String? {
         guard let active = sessions.authorizedLease(owner: owner, id: id, now: now) else {
             return "native_session_owned_or_expired"
         }
@@ -50,6 +51,11 @@ enum NativeControlAdmission {
         guard active.lockGeneration == health.lockGeneration else { return revoke("native_lock_generation_changed") }
         guard mode(active.owner) == "automation" else { return revoke("native_automation_owner_required") }
         guard legacyReady() else { return revoke("native_legacy_recovery_required") }
+        // End, callback revocation, replacement or expiry may occur inside the
+        // readiness closures. Recheck identity/time without revoking a newer lease.
+        guard sessions.gate(owner: owner, id: active.id, now: recheckNow?() ?? now) else {
+            return "native_session_owned_or_expired"
+        }
         return nil
     }
 }

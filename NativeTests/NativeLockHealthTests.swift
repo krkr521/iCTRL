@@ -109,4 +109,29 @@ final class NativeLockHealthTests: XCTestCase {
         XCTAssertFalse(sessions.gate(owner: "agent", id: "lease", now: 2))
     }
 
+    func testEndOrReplacementDuringReadinessCannotGrantOldRequestOrRevokeNewLease() throws {
+        let sessions = NativeAutomationSession()
+        _ = try sessions.begin(owner: "agent", id: "old", ttl: 120, now: 1, date: Date(), lockGeneration: 4)
+        let ready = NativeDeviceReadiness(interruptionGuardAvailable: true, f13Available: true,
+            monitorRegistered: true, stateKnown: true, locked: false, lockGeneration: 4)
+        let error = NativeControlAdmission.error(sessions: sessions, owner: "agent", id: "old", now: 2,
+            readiness: { ready }, mode: { _ in "automation" }, legacyReady: {
+                sessions.revoke(id: "old")
+                _ = try! sessions.begin(owner: "agent", id: "new", ttl: 120, now: 2, date: Date(), lockGeneration: 4)
+                return true
+            }, serviceReady: { _ in true }, recheckNow: { 2 })
+        XCTAssertEqual(error, "native_session_owned_or_expired")
+        XCTAssertTrue(sessions.gate(owner: "agent", id: "new", now: 2))
+    }
+    func testFinalAdmissionUsesFreshClockForHeartbeatExpiry() throws {
+        let sessions = NativeAutomationSession()
+        _ = try sessions.begin(owner: "agent", id: "old", ttl: 120, now: 1, date: Date(), lockGeneration: 4)
+        let ready = NativeDeviceReadiness(interruptionGuardAvailable: true, f13Available: true,
+            monitorRegistered: true, stateKnown: true, locked: false, lockGeneration: 4)
+        XCTAssertEqual(NativeControlAdmission.error(sessions: sessions, owner: "agent", id: "old", now: 2,
+            readiness: { ready }, mode: { _ in "automation" }, legacyReady: { true },
+            serviceReady: { _ in true }, recheckNow: { 16 }), "native_session_owned_or_expired")
+        XCTAssertFalse(sessions.gate(owner: "agent", id: "old", now: 16))
+    }
+
 }

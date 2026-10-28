@@ -125,7 +125,8 @@ class JSONRPCServer {
         NativeControlAdmission.error(sessions: nativeSession, owner: owner, id: id, now: now,
             readiness: nativeDeviceReadiness, mode: { self.quietControl.mode(owner: $0) },
             legacyReady: { self.quietControl.takeoverState(now: now) == "manual_ready" },
-            serviceReady: { self.serviceKeepAwake.source(lockGeneration: $0) != nil })
+            serviceReady: { self.serviceKeepAwake.source(lockGeneration: $0) != nil },
+            recheckNow: { ProcessInfo.processInfo.systemUptime })
     }
 
     func revokeNativeSession() { nativeSession.revoke() }
