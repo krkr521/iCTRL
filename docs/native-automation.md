@@ -167,3 +167,17 @@ The Windows overlay and Minis package are candidates pending explicit installati
 and physical device acceptance. CI policy tests and IPA compilation do not prove idle
 reset, notification behavior, background scheduling, or historic pending recovery.
 System Automation Running shade research has been stopped and no fix is claimed.
+
+
+Version `1.98.13-krkr.native13` routes explicit received-file notification selections
+to a locally verified document snapshot with Quick Look where supported and the
+system share sheet. Notification payloads carry only an opaque transfer ID. Arrival
+alone does not navigate. Cold/warm App and Runner callbacks are handled separately;
+actual device notification delivery, authorization and sharing destinations still
+require device validation. A replacement file selection is resolved independently
+of server polling, and Quick Look reloads when its selected URL changes.
+
+The Main About row now uses the installed Bundle version and build instead of the
+old hard-coded 1.0.0. The foreground UIKit keep-awake description no longer tells
+users to set system Auto-Lock to Never. Native12 lease/F13 and legacy recovery
+boundaries remain unchanged. See [file notification routing](file-notification-open.md).
