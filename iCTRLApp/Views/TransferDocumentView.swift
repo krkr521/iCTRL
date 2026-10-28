@@ -30,9 +30,14 @@ private struct TransferQuickLook: UIViewControllerRepresentable {
         controller.dataSource = context.coordinator
         return controller
     }
-    func updateUIViewController(_ controller: QLPreviewController, context: Context) {}
+    func updateUIViewController(_ controller: QLPreviewController, context: Context) {
+        if context.coordinator.url != url {
+            context.coordinator.url = url
+            controller.reloadData()
+        }
+    }
     final class Coordinator: NSObject, QLPreviewControllerDataSource {
-        let url: URL
+        var url: URL
         init(url: URL) { self.url = url }
         func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
         func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem { url as NSURL }
