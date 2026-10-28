@@ -14,8 +14,8 @@ configFiles:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.98.16"
-    CURRENT_PROJECT_VERSION: 16
+    MARKETING_VERSION: "1.98.17"
+    CURRENT_PROJECT_VERSION: 17
 
 targets:
   iCTRL:
