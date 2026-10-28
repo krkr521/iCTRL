@@ -1,7 +1,7 @@
 {
   "archive": "ictrl-ready-taskscope.zip",
-  "sha256": "846fa867d69d0c072a676a1fa341d7093bd4463033df198ca61ce512463a011d",
-  "bytes": 31777,
+  "sha256": "41327bba40b6100aa8987d8469ed7012349118a0f4ea0658822b453701defb11",
+  "bytes": 31696,
   "server_minimum": "1.98.13-krkr.native12",
   "status": "native12_candidate_not_installed",
   "default_ttl_seconds": 240,
@@ -9,8 +9,8 @@
   "restore_reserve_seconds": 75,
   "files": {
     "install.sh": {
-      "bytes": 9270,
-      "sha256": "d26ac2137ccde6e146b7daabbfea23e234f7aaddae5999ebf41ccf377a395f6b"
+      "bytes": 9059,
+      "sha256": "0d38257776175b42feddad21e1df5169e4f79d3fca5a6e545773141aa8801c96"
     },
     "ictrl-ready/scripts/autolock_ui.py": {
       "bytes": 11984,
@@ -33,24 +33,24 @@
       "sha256": "4f51b93072f3449c88a46d8cf39d70ff59a7a8600ac6f77b54eabac7352a6a67"
     },
     "ictrl-ready/scripts/native_session.py": {
-      "bytes": 7605,
-      "sha256": "ce2cdfdb7082825b1d2cfb27f221d0c3d3b51727e64be93c27a2869cc8799979"
+      "bytes": 7455,
+      "sha256": "ba6d77b2659c993a829c700fe7630b77e28ba40e17d25daf52e18f47dc986974"
     },
     "ictrl-ready/scripts/quiet_batch.py": {
       "bytes": 4765,
       "sha256": "413503862d5ffd0ed9c74ddc6319ead0268395f032d4b0e2c3024ee93c4730f1"
     },
     "ictrl-ready/scripts/task_context.py": {
-      "bytes": 3980,
-      "sha256": "544d54ffcb47b5dead69f173209f0ce0c81fcea4e203e9d5de6f8543c9af603f"
+      "bytes": 3879,
+      "sha256": "75f4232b921dcf918c2bc240908a87c4f43f17cd3800ed925f819b39c76e1d05"
     },
     "ictrl-ready/scripts/task_session.py": {
-      "bytes": 20202,
-      "sha256": "b1b6117b7a02c4b7146f6839da5e7099dc5db50c24a045dfac898a8aae29c41c"
+      "bytes": 19845,
+      "sha256": "a9184e2dda8df00d53f40ad584cb65b097b38e955b079c376f3164d8ae5ba9da"
     },
     "ictrl-ready/SKILL.md": {
-      "bytes": 6421,
-      "sha256": "5685d7b1e986650584f94981013db25e8316f10418e58aa013a4fbd2beefb338"
+      "bytes": 6351,
+      "sha256": "0ff8c2231876fc05aae09e1052b6b9b62602c63efbc78a48ba22b645e25c02d5"
     }
   },
   "limits": [
