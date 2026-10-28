@@ -11,9 +11,7 @@ final class CompanionFileReceiver: ObservableObject {
     @Published var showTransfers = false
     @Published private(set) var openedDocument: URL?
     @Published private(set) var openMessage: String?
-    private var requestedID: String?
-    private var resolving = false
-    private var openGeneration = 0
+    private var selection = TransferFileSelection()
     @Published private var savedDocuments: [String: SavedTransferDocument] = [:]
     private var savedOrder: [String] = []
     var localSavedFiles: [SavedTransferDocument] {
@@ -50,40 +48,42 @@ final class CompanionFileReceiver: ObservableObject {
 
     func requestOpen(id: String) {
         guard TransferFileRoute.validID(id) else { return }
-        showTransfers = true; openedDocument = nil; requestedID = id; openGeneration += 1
+        showTransfers = true; openedDocument = nil; selection.request(id)
         openMessage = "正在定位所选文件…"
         Task { await resolveRequestedFile() }
     }
     func closeDocument() {
-        openGeneration += 1; requestedID = nil; openedDocument = nil; openMessage = nil
+        selection.clear(); openedDocument = nil; openMessage = nil
         try? FileManager.default.removeItem(at: Self.previewDirectory)
     }
     private func resolveRequestedFile(finalizeUnknown: Bool = false) async {
-        guard let id = requestedID, !resolving else { return }
-        resolving = true; defer { resolving = false }
-        let generation = openGeneration
+        guard let ticket = selection.begin() else { return }
+        let id = ticket.id
+        defer {
+            if selection.finish(ticket) { Task { await resolveRequestedFile() } }
+        }
         guard let record = savedDocuments[id] else {
             if let row = transfers.first(where: { $0.id == id }) {
                 if row.stage == .failed || row.stage == .savedElsewhere || row.stage == .saved {
                     openMessage = "此文件未在本机完成保存。请查看传输状态或重新传入。"
-                    requestedID = nil
+                    selection.complete(ticket)
                 } else { openMessage = "正在完成所选文件的接收和保存，请保持 iCTRL 在前台。" }
             } else if finalizeUnknown {
                 openMessage = "找不到所选文件的保存记录。文件可能已过期、被删除，或尚未传入本机。"
-                requestedID = nil
+                selection.complete(ticket)
             }
             return
         }
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         guard let source = record.documentURL(in: documents) else {
-            openMessage = "所选文件不可用，未打开其他文件。"; requestedID = nil; return
+            openMessage = "所选文件不可用，未打开其他文件。"; selection.complete(ticket); return
         }
         let snapshot = Self.previewDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         do {
             guard try await verifiedDocument(record.name, size: record.size, hash: record.sha256, documents: documents) else {
                 throw CocoaError(.fileReadCorruptFile)
             }
-            guard generation == openGeneration, requestedID == id else { return }
+            guard selection.isCurrent(ticket) else { return }
             try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
             let target = snapshot.appendingPathComponent(record.name)
             try await Task.detached(priority: .userInitiated) {
@@ -92,16 +92,16 @@ final class CompanionFileReceiver: ObservableObject {
             guard try await verifiedDocument(record.name, size: record.size, hash: record.sha256, documents: snapshot) else {
                 throw CocoaError(.fileReadCorruptFile)
             }
-            guard generation == openGeneration, requestedID == id else {
+            guard selection.isCurrent(ticket) else {
                 try? FileManager.default.removeItem(at: snapshot); return
             }
             // Preview/share an immutable private copy verified after copying.
-            openedDocument = target; openMessage = nil; requestedID = nil
+            openedDocument = target; openMessage = nil; selection.complete(ticket)
         } catch {
             try? FileManager.default.removeItem(at: snapshot)
-            guard generation == openGeneration else { return }
+            guard selection.isCurrent(ticket) else { return }
             openMessage = "所选文件已删除、被修改或暂时无法读取。未打开其他文件，请重新传入或检查「文件」。"
-            requestedID = nil
+            selection.complete(ticket)
         }
     }
     private func recordSaved(id: String, name: String, size: Int, hash: String, receipt: URL) async throws {
@@ -137,6 +137,9 @@ final class CompanionFileReceiver: ObservableObject {
                 if !client.isPaired { client = RunnerClient(port: 8200) }
                 guard client.isPaired else {
                     status = "请先在已授权客户端中连接 iCTRL 服务"
+                    if let id = selection.id, savedDocuments[id] == nil {
+                        openMessage = "所选文件尚无本机保存记录，且尚未连接服务。连接后可继续接收；未打开其他文件。"
+                    }
                     try await Task.sleep(nanoseconds: 2_000_000_000)
                     continue
                 }
@@ -195,7 +198,9 @@ final class CompanionFileReceiver: ObservableObject {
                     }
                 } else {
                     status = "暂时无法连接 iCTRL 服务"
-                    if requestedID != nil { openMessage = "暂时无法连接服务以完成保存。请保持 iCTRL 在前台后重试。" }
+                    if let id = selection.id, savedDocuments[id] == nil {
+                        openMessage = "暂时无法连接服务以完成保存。请保持 iCTRL 在前台后重试。"
+                    }
                 }
             }
             do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }

@@ -5,6 +5,8 @@ import Combine
 /// Installed before didFinishLaunching returns, including notification cold starts.
 final class TransferNotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate, ObservableObject {
     @Published private(set) var selectedID: String?
+    private static let savedLock = NSLock()
+    private static var savedGeneration: UInt64 = 0
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         let center = UNUserNotificationCenter.current()
@@ -22,7 +24,7 @@ final class TransferNotificationDelegate: NSObject, UIApplicationDelegate, UNUse
             action: response.actionIdentifier, defaultAction: UNNotificationDefaultActionIdentifier,
             payloadID: content.userInfo[TransferFileRoute.idKey] as? String)
         DispatchQueue.main.async {
-            self.selectedID = id
+            if let id { self.selectedID = id }
             completionHandler()
         }
     }
@@ -34,6 +36,7 @@ final class TransferNotificationDelegate: NSObject, UIApplicationDelegate, UNUse
     }
     static func postSaved(id: String) {
         guard TransferFileRoute.validID(id) else { return }
+        savedLock.lock(); savedGeneration &+= 1; let generation = savedGeneration; savedLock.unlock()
         let content = UNMutableNotificationContent()
         content.title = "iCTRL 文件已保存"
         content.body = "点按可直接查看或分享文件。"
@@ -43,6 +46,8 @@ final class TransferNotificationDelegate: NSObject, UIApplicationDelegate, UNUse
         // One generic card; no filename, path, hash, content, or pairing data.
         let center = UNUserNotificationCenter.current()
         let post = {
+            savedLock.lock(); defer { savedLock.unlock() }
+            guard savedGeneration == generation else { return }
             center.add(UNNotificationRequest(identifier: "ictrl.files.saved", content: content, trigger: nil))
         }
         center.getNotificationSettings { settings in

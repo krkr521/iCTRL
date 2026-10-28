@@ -59,4 +59,33 @@ final class TransferFileRouteTests: XCTestCase {
         let record = SavedTransferDocument(id: id, name: "file.ipa", size: 1, sha256: String(repeating: "a", count: 64))
         XCTAssertNil(record.documentURL(in: root))
     }
+    func testNewSelectionDuringAwaitIsRetriedWithoutServerPoll() throws {
+        var selection = TransferFileSelection()
+        selection.request("A")
+        let a = try XCTUnwrap(selection.begin())
+        // A is paused at its file verification/copy await. B's immediate resolver
+        // cannot run yet; A's completion must arrange B locally, even offline.
+        selection.request("B")
+        XCTAssertNil(selection.begin())
+        XCTAssertFalse(selection.isCurrent(a))
+        selection.complete(a)
+        XCTAssertEqual(selection.id, "B")
+        XCTAssertTrue(selection.finish(a))
+        let b = try XCTUnwrap(selection.begin())
+        XCTAssertEqual(b.id, "B")
+        XCTAssertTrue(selection.isCurrent(b))
+        selection.complete(b)
+        XCTAssertFalse(selection.finish(b))
+        XCTAssertNil(selection.id)
+    }
+    func testClosingDuringAwaitDoesNotReopenOrReplay() throws {
+        var selection = TransferFileSelection()
+        selection.request("A")
+        let ticket = try XCTUnwrap(selection.begin())
+        selection.clear()
+        XCTAssertFalse(selection.isCurrent(ticket))
+        XCTAssertFalse(selection.finish(ticket))
+        XCTAssertNil(selection.begin())
+    }
+
 }

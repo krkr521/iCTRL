@@ -31,7 +31,9 @@ receiver finishes receiving, checks SHA-256, links the document into Documents, 
 its save acknowledgement and then resolves the original selection. It never selects
 the newest or a similarly named file. Unknown/expired IDs, missing local receipts,
 other-recipient saves, deleted or changed files show an explicit unavailable message.
-A network failure reports that saving cannot yet finish; it does not open a different
+A replacement selection made while another hash/copy is awaiting is serviced locally
+as soon as the old resolver unwinds, without needing a successful server poll. A
+network failure reports that saving cannot yet finish; it does not open a different
 file or clear any transfer state.
 
 ## Saved-file authority
@@ -77,7 +79,8 @@ file. The fallback path remains Files > On My iPhone > iCTRL.
 ## Validation
 
 Foundation tests cover strict URL shape, exact action routing, cold-launch receipt
-roundtrip, invalid names/metadata and symlink escape. Windows checks do not compile
+roundtrip, invalid names/metadata, symlink escape, replacement selections across an
+await, and dismissal without reopening. Windows checks do not compile
 iOS. Run `swift test --filter TransferFileRouteTests` plus the signed iOS build on macOS.
 Device acceptance still must exercise warm/cold saved notification taps and custom
 actions, pending-save selection, unsupported IPA share, duplicate filenames, deleted

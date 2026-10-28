@@ -50,3 +50,27 @@ struct SavedTransferDocument: Codable, Equatable {
         return candidate
     }
 }
+
+/// One resolver consumes the latest explicit user selection. A replacement during
+/// an await must be serviced even when the transfer server is offline.
+struct TransferFileSelection {
+    struct Ticket: Equatable { let id: String; let generation: UInt64 }
+    private(set) var id: String?
+    private var generation: UInt64 = 0
+    private var active: Ticket?
+    mutating func request(_ id: String) { generation &+= 1; self.id = id }
+    mutating func clear() { generation &+= 1; id = nil }
+    mutating func begin() -> Ticket? {
+        guard active == nil, let id else { return nil }
+        let ticket = Ticket(id: id, generation: generation)
+        active = ticket; return ticket
+    }
+    func isCurrent(_ ticket: Ticket) -> Bool { id == ticket.id && generation == ticket.generation }
+    mutating func complete(_ ticket: Ticket) { if isCurrent(ticket) { id = nil } }
+    /// true means the caller must immediately resolve the replacement, without a server poll.
+    mutating func finish(_ ticket: Ticket) -> Bool {
+        guard active == ticket else { return false }
+        active = nil
+        return id != nil && !isCurrent(ticket)
+    }
+}
