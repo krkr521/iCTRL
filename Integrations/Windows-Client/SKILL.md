@@ -7,7 +7,7 @@ description: 在 Windows 通过已配对的 iCTRL Native12 会话操控 iPhone�
 
 正常 UI 任务必须通过 `scripts/phone_task.py run --script <UTF-8任务脚本>` 执行。任务脚本直接 `import control` 并调用 `control.rpc_call()`，不嵌套会话。默认 TTL 120 秒，显式 `--ttl-seconds 300` 为上限，不能自动续租。脚本结束、异常或停止时发送一次 End；超时后先观察结果，不重放输入。
 
-入口须通过认证的 automation_native_capabilities 确认 Native12 session、f13_lease、explicit_alerts_only 及当前 available。旧 Runner 拒绝正常任务，不静默回退 Settings 或 Quiet。F13 依赖私有 XCTest 接口，静态检查或编译通过不等于实际保活验收；手机已锁定时请用户本人解锁。
+入口须通过认证的 automation_native_capabilities 确认 native session、已知 f13_lease 或 f13_service 完整契约、explicit_alerts_only 及当前 available。旧 Runner 拒绝正常任务，不静默回退 Settings 或 Quiet。F13 依赖私有 XCTest 接口，静态检查或编译通过不等于实际保活验收；手机已锁定时请用户本人解锁。
 
 正常任务不打开 Settings，不读取或修改 Auto-Lock，不切 Focus，不运行静音快捷指令。每 5 秒认证心跳，服务器约 15 秒未收到即撤销任务 UI 授权；断网、崩溃和系统挂起不能保证立即 End。存在旧 Auto-Lock 记录则停止并保留，`end` 仅供明确补恢复旧记录；旧 Quiet pending 按原恢复流程处理，不能清记录掩盖不确定状态。`begin` 不用于持久占用会话；使用完整 run。
 
