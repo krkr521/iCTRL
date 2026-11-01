@@ -1,4 +1,7 @@
 import XCTest
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 @testable import NativePolicy
 
 final class ScreenCaptureGeometryTests: XCTestCase {

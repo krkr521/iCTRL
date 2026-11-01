@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 /// Geometry from one capture, never from a previous app frame or device rotation.
 /// `imageSize` must already include the image's display orientation (UIImage.size does).
