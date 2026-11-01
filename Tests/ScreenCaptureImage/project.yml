@@ -13,7 +13,7 @@ targets:
     sources:
       - path: ../../iCTRLKit/ScreenCaptureGeometry.swift
       - path: ../../iCTRLUITests/ScreenCaptureImage.swift
-      - path: ../../Tests/ScreenCaptureImage/ScreenCaptureImageTests.swift
+      - path: ScreenCaptureImageTests.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.openminis.ScreenCaptureImageTests

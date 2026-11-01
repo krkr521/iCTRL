@@ -5,7 +5,10 @@ cd "$(dirname "$0")/.."
 [[ "$(uname -s)" == Darwin ]] || { echo "Requires macOS with full Xcode and an installed iOS Simulator." >&2; exit 1; }
 command -v xcodegen >/dev/null || { echo "Requires xcodegen." >&2; exit 1; }
 mkdir -p build/screen-capture-image
-xcodegen generate --spec Tests/ScreenCaptureImage/project.yml --project build/screen-capture-image
+project_dir="Tests/ScreenCaptureImage"
+# XcodeGen resolves source groups relative to the spec. Keep the generated
+# project beside that spec; only DerivedData belongs in the build directory.
+xcodegen generate --spec "$project_dir/project.yml" --project "$project_dir"
 simulator_id="$(xcrun simctl list devices available --json | python3 -c '
 import json, sys
 devices = json.load(sys.stdin)["devices"]
@@ -17,7 +20,7 @@ candidates.sort(key=lambda device: device.get("state") != "Booted")
 print(candidates[0]["udid"])
 ')"
 xcodebuild test \
-  -project build/screen-capture-image/ScreenCaptureImage.xcodeproj \
+  -project "$project_dir/ScreenCaptureImage.xcodeproj" \
   -scheme ScreenCaptureImageTests \
   -destination "platform=iOS Simulator,id=$simulator_id" \
   -derivedDataPath build/screen-capture-image/DerivedData \
