@@ -9,6 +9,7 @@ python3 Scripts/test-native-build-manifest.py
 mkdir -p build
 swift test | tee build/swift-policy-tests.log
 ./Scripts/test-continuous-drag.sh | tee build/continuous-drag-tests.log
+bash Scripts/test-screen-capture-image.sh 2>&1 | tee build/screen-capture-image-tests.log
 mkdir -p build/dependencies
 archive="$PWD/build/dependencies/idevice-xcframework-v0.1.68.zip"
 if [[ ! -f "$archive" ]]; then

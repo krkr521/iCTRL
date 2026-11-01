@@ -103,7 +103,7 @@ enum ScreenSettle {
     /// The same downscale from an image already in hand — a read that took a
     /// screenshot anyway shouldn't pay for a second capture.
     static func frame(from image: UIImage) -> Frame? {
-        guard let cg = image.cgImage else { return nil }
+        guard let cg = ScreenCaptureImage.uprightImage(image)?.cgImage else { return nil }
         var px = [UInt8](repeating: 0, count: gridW * gridH * 4)
         let drawn = px.withUnsafeMutableBytes { buf -> Bool in
             guard let ctx = CGContext(data: buf.baseAddress, width: gridW, height: gridH,
@@ -160,7 +160,8 @@ enum ScreenSettle {
     /// An area (points) of the screen at 2pt per cell. Two patches of the
     /// same area always have the same size, also near an edge.
     static func patch(from image: UIImage, in area: CGRect, screen: CGSize) -> Patch? {
-        guard let cg = image.cgImage, screen.width > 0, area.width > 0, area.height > 0 else { return nil }
+        guard let cg = ScreenCaptureImage.uprightImage(image)?.cgImage,
+              screen.width > 0, area.width > 0, area.height > 0 else { return nil }
         let scale = Double(cg.width) / Double(screen.width)
         let r = CGRect(x: area.minX * scale, y: area.minY * scale, width: area.width * scale, height: area.height * scale)
             .intersection(CGRect(x: 0, y: 0, width: cg.width, height: cg.height)).integral

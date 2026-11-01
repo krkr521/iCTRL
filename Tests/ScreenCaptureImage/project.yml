@@ -1,0 +1,29 @@
+name: ScreenCaptureImage
+options:
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGNING_ALLOWED: NO
+targets:
+  ScreenCaptureImageTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ../../iCTRLKit/ScreenCaptureGeometry.swift
+      - path: ../../iCTRLUITests/ScreenCaptureImage.swift
+      - path: ScreenCaptureImageTests.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.openminis.ScreenCaptureImageTests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: ""
+schemes:
+  ScreenCaptureImageTests:
+    build:
+      targets:
+        ScreenCaptureImageTests: all
+    test:
+      targets:
+        - ScreenCaptureImageTests

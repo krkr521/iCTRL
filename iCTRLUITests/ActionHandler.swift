@@ -335,17 +335,37 @@ class ActionHandler {
 
     // MARK: - Screen Geometry (for progressive disclosure)
 
-    /// Cached point size. Reading `app.frame` triggers XCUITest quiescence waiting
-    /// (waits for the UI to be idle), which on animation-heavy apps can take many
-    /// seconds or time out. The screen size never changes during a session (rotation
-    /// aside), so we fetch it once lazily and reuse it — keeping the hot path (tap/
-    /// swipe validation + hint) free of quiescence.
+    /// Cached only within one dispatch. Rotation can occur between any two calls.
+    /// Captures refresh this directly; other spatial calls take one fast capture
+    /// rather than querying app.frame and waiting for application quiescence.
     private var cachedPointSize: CGRect?
+    private var lastScreenPointSize: CGSize?
+
+    @discardableResult
+    private func rememberScreenGeometry(from image: UIImage) -> ScreenCaptureGeometry? {
+        guard let geometry = ScreenCaptureImage.geometry(of: image, deviceScale: scale) else { return nil }
+        if let previous = lastScreenPointSize, previous != geometry.pointSize {
+            // These rectangles/coverage values belong to the previous orientation.
+            overlayCache = nil
+            pipCache = nil
+            coverageCache = nil
+        }
+        lastScreenPointSize = geometry.pointSize
+        cachedPointSize = CGRect(origin: .zero, size: geometry.pointSize)
+        return geometry
+    }
 
     /// Logical point size of the screen — the coordinate space ALL tap/swipe/drag use.
-    /// Fetched once, then cached, to avoid repeated quiescence waits.
+    /// UIImage.size already includes imageOrientation; never swap it a second time.
     private var pointSize: CGRect {
         if let cached = cachedPointSize { return cached }
+        var image: UIImage?
+        _ = ObjCException.catching { image = XCUIScreen.main.screenshot().image }
+        if let image, let geometry = rememberScreenGeometry(from: image) {
+            return CGRect(origin: .zero, size: geometry.pointSize)
+        }
+        // A fresh AX frame is a fallback only when screen capture failed. Never
+        // reuse a frame from an earlier request or guess a 90-degree transform.
         let frame = app.frame
         // Refuse to cache a compatibility-mode reading. The runner has no launch
         // storyboard, so a size sourced from UIScreen (or an app.frame read
@@ -367,7 +387,7 @@ class ActionHandler {
     /// storyboard. Never a real modern device's point size.
     private static func isCompatibilityModeSize(_ r: CGRect) -> Bool {
         let known: [(CGFloat, CGFloat)] = [(320, 480), (320, 568)]
-        return known.contains { $0 == r.width && $1 == r.height }
+        return known.contains { $0 == min(r.width, r.height) && $1 == max(r.width, r.height) }
     }
 
     /// Device scale factor (points → pixels). UIScreen access does NOT trigger
@@ -376,9 +396,8 @@ class ActionHandler {
     /// NOTE: `UIScreen.main.bounds` must NEVER be used for the point size here.
     /// The XCUITest runner ships without a launch storyboard, so iOS runs it in
     /// compatibility mode and reports a 320x480 screen no matter the hardware —
-    /// use `pointSize` (backed by `app.frame`, which reads true device geometry
-    /// through the accessibility server). `.scale` is unaffected by compatibility
-    /// mode and stays correct, which is the only reason this one is safe.
+    /// use the current capture's oriented pixel dimensions divided by `.scale`.
+    /// `.scale` is unaffected by compatibility mode.
     private var scale: Double { Double(UIScreen.main.scale) }
 
     /// Validate a coordinate is inside the tappable point-space.
@@ -391,7 +410,7 @@ class ActionHandler {
                 code: -32602,
                 message: "\(context): coordinate (\(x), \(y)) is out of bounds. " +
                     "Valid tap range is x∈[0,\(Int(w))], y∈[0,\(Int(h))] in POINTS (not pixels). " +
-                    "If you computed this from a screenshot, divide pixel coordinates by scale=\(scale) first.",
+                    "If you computed this from a screenshot, divide pixel coordinates by that screenshot response's scale first.",
                 data: [
                     "point_width": .double(w),
                     "point_height": .double(h),
@@ -468,6 +487,7 @@ class ActionHandler {
     }
 
     func dispatch(method: String, params: [String: JSONValue]?) -> ([String: JSONValue]?, JSONRPCError?) {
+        cachedPointSize = nil
         #if DEBUG
         if method == "shade_system_artifact" {
             guard let request = ShadeArtifactRequest(params ?? [:]) else { return (nil, .invalidParams) }
@@ -549,11 +569,12 @@ class ActionHandler {
         // a ref resolves) gets one fine look.
         var imageBefore: UIImage?
         let baseline: ScreenSettle.Frame?
-        if settleOn, Self.pointTapMethods.contains(method), let img = iCTRLUITests.captureFrame() {
+        if (settleOn || (blind && lastSeen != nil)), let img = iCTRLUITests.captureFrame() {
+            rememberScreenGeometry(from: img)
             baseline = ScreenSettle.frame(from: img)
-            imageBefore = img
+            if settleOn, Self.pointTapMethods.contains(method) { imageBefore = img }
         } else {
-            baseline = (settleOn || (blind && lastSeen != nil)) ? ScreenSettle.sample() : nil
+            baseline = nil
         }
         // A deep link is meant to switch apps and names where it landed; while
         // an app launches each of these process queries costs a noticeable delay.
@@ -1399,6 +1420,7 @@ class ActionHandler {
         let refCount = refStore.count
         refStore.removeAll()
         cachedPointSize = nil
+        lastScreenPointSize = nil
         frontByPID.removeAll()
         lastSeen = nil
 
@@ -1423,11 +1445,8 @@ class ActionHandler {
 
     private func deviceInfo() -> ([String: JSONValue]?, JSONRPCError?) {
         let device = UIDevice.current
-        // Must be app.frame: it is the only source that reports TRUE device
-        // geometry from inside the runner (see compatibilityModeScreenBounds).
-        // This is why device_info stays on the main-thread/UI path despite the
-        // cost — reporting a wrong coordinate space is worse than being slow,
-        // since every tap the client sends is computed against these numbers.
+        // Read this request's capture geometry, so rotating between device_info
+        // calls changes the reported bounds just as it changes screenshot.
         let frame = pointSize
         let s = scale
         let result: [String: JSONValue] = [
@@ -1496,15 +1515,13 @@ class ActionHandler {
     }
 
     private func screenshot(_ cmd: ActionCommand) -> ([String: JSONValue]?, JSONRPCError?) {
-        // XCUIScreen.screenshot() grabs the current frame directly and does NOT
-        // wait for quiescence. Use the CACHED point size (not app.frame) so the
-        // screenshot path stays fast on animation-heavy apps.
-        let frame = pointSize
+        // Capture first: the image, its dimensions and its metadata must all
+        // describe the same frame even when orientation changed since last call.
         let deviceScale = scale  // native pixels-per-point (e.g. 3)
 
         // Requested output scale (pixels-per-point): default 2, clamp to (0, 3].
         let requested = cmd.scale ?? 2.0
-        let targetScale = min(max(requested, 0.05), 3.0)
+        guard requested.isFinite else { return (nil, .invalidParams) }
 
         // Target selection:
         //   - explicit bundle_id → screenshot ONLY that app's window (opt-in)
@@ -1542,10 +1559,11 @@ class ActionHandler {
             scopedTo = nil
         }
         if scopedTo == nil { readFrame = ScreenSettle.frame(from: fullImage) }
-
-        // Resize on the server to targetScale so the client gets a smaller PNG.
-        let targetPixelW = frame.width * targetScale
-        let targetPixelH = frame.height * targetScale
+        let geometry = scopedTo == nil
+            ? rememberScreenGeometry(from: fullImage)
+            : ScreenCaptureImage.geometry(of: fullImage, deviceScale: deviceScale)
+        guard let geometry else { return (nil, .serverError("Could not determine captured image geometry.")) }
+        let frame = CGRect(origin: .zero, size: geometry.pointSize)
         // JPEG by default. The client has to run the whole response body through
         // the envelope's HMAC keystream, so response SIZE is what dominates a
         // screenshot's end-to-end cost — a PNG of a UI screen is typically 5-10x
@@ -1553,11 +1571,17 @@ class ActionHandler {
         // directly on the client's decrypt loop. PNG stays available for callers
         // that need lossless output (pixel diffing, OCR on fine text).
         let wantPNG = (cmd.format ?? "jpeg").lowercased() == "png"
-        let quality = min(max(cmd.quality ?? 0.6, 0.1), 1.0)
-        let targetPixels = CGSize(width: targetPixelW, height: targetPixelH)
-        let imageData = wantPNG
-            ? Self.encodePNG(fullImage, targetPixels: targetPixels)
-            : Self.encodeJPEG(fullImage, targetPixels: targetPixels, quality: quality)
+        let requestedQuality = cmd.quality ?? 0.6
+        guard requestedQuality.isFinite else { return (nil, .invalidParams) }
+        let quality = min(max(requestedQuality, 0.1), 1.0)
+        guard let encoded = ScreenCaptureImage.encode(fullImage, geometry: geometry, requestedScale: requested,
+                                                     format: wantPNG ? .png : .jpeg, quality: quality) else {
+            return (nil, .serverError("Could not encode the captured image."))
+        }
+        let targetPixelW = encoded.pixelSize.width
+        let targetPixelH = encoded.pixelSize.height
+        let targetScale = encoded.scale
+        let imageData = encoded.data
         let base64 = imageData.base64EncodedString()
 
         var result: [String: JSONValue] = [
@@ -1575,6 +1599,7 @@ class ActionHandler {
             "requested_scale": .double(requested),
             "device_scale": .double(deviceScale),
             "device_name": .string(UIDevice.current.name),
+            "coordinate_space": .string(scopedTo == nil ? "points" : "captured_window_points"),
             // Kept for backward compatibility:
             "width": .double(frame.width),
             "height": .double(frame.height),
@@ -1612,42 +1637,13 @@ class ActionHandler {
         if let bid = scopedTo {
             out["scoped_to"] = .string(bid)
             out["scope"] = .string("app")
+            out["hint"] = .string("App-scoped image: dimensions are relative to the captured window. " +
+                "Use a full-screen screenshot (omit bundle_id) before converting image locations into global tap coordinates.")
         } else {
             out["scope"] = .string("screen")
         }
         return (out, nil)
     }
-
-    /// Render a UIImage to JPEG at the requested pixel size and quality.
-    ///
-    /// Shares the resize path with `encodePNG`; only the final serialization
-    /// differs. `opaque = true` matters here — a screen capture has no alpha, and
-    /// telling the renderer so avoids a needless alpha channel.
-    private static func encodeJPEG(_ image: UIImage, targetPixels: CGSize, quality: Double) -> Data {
-        let resized = resize(image, targetPixels: targetPixels)
-        return resized.jpegData(compressionQuality: CGFloat(quality))
-            ?? image.jpegData(compressionQuality: CGFloat(quality))
-            ?? Data()
-    }
-
-    /// Downscale to an exact pixel size. Shared by the PNG and JPEG encoders.
-    private static func resize(_ image: UIImage, targetPixels: CGSize) -> UIImage {
-        let w = max(1, Int(targetPixels.width.rounded()))
-        let h = max(1, Int(targetPixels.height.rounded()))
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1               // we specify size in raw pixels
-        format.opaque = true
-        let size = CGSize(width: w, height: h)
-        let renderer = UIGraphicsImageRenderer(size: size, format: format)
-        return renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
-    }
-
-    /// Render a UIImage to PNG at the requested pixel size (server-side downscale).
-    private static func encodePNG(_ image: UIImage, targetPixels: CGSize) -> Data {
-        let resized = resize(image, targetPixels: targetPixels)
-        return resized.pngData() ?? image.pngData() ?? Data()
-    }
-
 
     /// Why an element that exists can't be tapped, said so the caller does
     /// the right next thing. "Scroll it into view" alone is wrong for
@@ -7218,16 +7214,13 @@ class ActionHandler {
     /// are top-left, so y is flipped here. Getting that wrong is quietly awful:
     /// every coordinate still looks plausible, but taps land mirrored about the
     /// middle of the screen.
-    private func ocrItems(from request: VNRecognizeTextRequest, minConfidence: Float) -> [JSONValue] {
-        let frame = pointSize
+    private func ocrItems(from request: VNRecognizeTextRequest, minConfidence: Float,
+                          geometry: ScreenCaptureGeometry) -> [JSONValue] {
         var items: [JSONValue] = []
         for obs in (request.results ?? []) {
             guard let top = obs.topCandidates(1).first, top.confidence >= minConfidence else { continue }
-            let b = obs.boundingBox
-            let x = b.minX * frame.width
-            let w = b.width * frame.width
-            let h = b.height * frame.height
-            let y = (1 - b.maxY) * frame.height
+            let box = geometry.pointRect(visionBounds: obs.boundingBox)
+            let x = box.minX, y = box.minY, w = box.width, h = box.height
             items.append(.object([
                 "label": .string(top.string),
                 "confidence": .double(Double(top.confidence)),
@@ -7247,13 +7240,13 @@ class ActionHandler {
     /// page_source's automatic fallback, so both produce identical item shapes.
     private func runOCR(query: String?, fast: Bool, minConfidence: Float)
         -> (items: [JSONValue], shotMs: Double, ocrMs: Double)? {
-        let frame = pointSize
         var image: UIImage?
         let shotStart = nowMonotonic
         _ = ObjCException.catching { image = XCUIScreen.main.screenshot().image }
         let shotMs = (nowMonotonic - shotStart) * 1000
         readFrame = image.flatMap(ScreenSettle.frame(from:))
-        guard let cg = image?.cgImage else { return nil }
+        guard let image, let geometry = rememberScreenGeometry(from: image),
+              let cg = ScreenCaptureImage.uprightImage(image)?.cgImage else { return nil }
 
         let ocrStart = nowMonotonic
         let request = VNRecognizeTextRequest()
@@ -7274,11 +7267,8 @@ class ActionHandler {
             // Vision's box is normalised with the ORIGIN AT BOTTOM-LEFT; iOS points
             // are top-left. Flipping y is what makes these coordinates tappable —
             // get it wrong and every tap lands mirrored about the middle.
-            let b = obs.boundingBox
-            let x = b.minX * frame.width
-            let w = b.width * frame.width
-            let h = b.height * frame.height
-            let y = (1 - b.maxY) * frame.height
+            let box = geometry.pointRect(visionBounds: obs.boundingBox)
+            let x = box.minX, y = box.minY, w = box.width, h = box.height
             if let q = query, !q.isEmpty, !top.string.localizedCaseInsensitiveContains(q) { continue }
             if overlays.contains(where: { $0.contains(CGPoint(x: x + w / 2, y: y + h / 2)) }) { continue }
             items.append(.object([
@@ -7302,7 +7292,6 @@ class ActionHandler {
     }
 
     private func screenText(_ cmd: ActionCommand) -> ([String: JSONValue]?, JSONRPCError?) {
-        let frame = pointSize
         var image: UIImage?
         let shotStart = nowMonotonic
         // Same capture as `screenshot`: XCUIScreen never blocks on quiescence,
@@ -7311,7 +7300,8 @@ class ActionHandler {
         _ = ObjCException.catching { image = XCUIScreen.main.screenshot().image }
         let shotMs = (nowMonotonic - shotStart) * 1000
         readFrame = image.flatMap(ScreenSettle.frame(from:))
-        guard let cg = image?.cgImage else {
+        guard let image, let geometry = rememberScreenGeometry(from: image),
+              let cg = ScreenCaptureImage.uprightImage(image)?.cgImage else {
             return (nil, .serverError("Could not capture the screen for OCR."))
         }
 
@@ -7343,11 +7333,8 @@ class ActionHandler {
             // Vision's box is normalised with the ORIGIN AT BOTTOM-LEFT; iOS points
             // are top-left. Flipping y is what makes these coordinates tappable —
             // get it wrong and every tap lands mirrored about the middle.
-            let b = obs.boundingBox
-            let x = b.minX * frame.width
-            let w = b.width * frame.width
-            let h = b.height * frame.height
-            let y = (1 - b.maxY) * frame.height
+            let box = geometry.pointRect(visionBounds: obs.boundingBox)
+            let x = box.minX, y = box.minY, w = box.width, h = box.height
             if let q = cmd.elementId, !q.isEmpty,
                !top.string.localizedCaseInsensitiveContains(q) { continue }
             let center = CGPoint(x: x + w / 2, y: y + h / 2)
@@ -7407,6 +7394,8 @@ class ActionHandler {
             "count": .int(items.count),
             "items": .array(items),
             "coordinate_space": .string("points"),
+            "point_width": .double(geometry.pointSize.width),
+            "point_height": .double(geometry.pointSize.height),
             "timing": .object([
                 "screenshot_ms": .int(Int(shotMs.rounded())),
                 "ocr_ms": .int(Int(ocrMs.rounded())),

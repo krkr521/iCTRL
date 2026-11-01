@@ -8,7 +8,7 @@ let package = Package(
     targets: [
         .target(name: "NativeLockHealth", path: "iCTRLCompat/LockHealth", publicHeadersPath: "include"),
         .target(name: "NativePolicy", path: "iCTRLKit", sources: [
-            "RPCCoreTypes.swift", "ClipboardTextPolicy.swift", "ProvisioningExpiry.swift",
+            "RPCCoreTypes.swift", "ClipboardTextPolicy.swift", "ProvisioningExpiry.swift", "ScreenCaptureGeometry.swift",
             "StartupURLRequest.swift", "RenewalGate.swift", "RenewalReceiptStore.swift", "CompanionRuntimeMetadata.swift", "RunnerProfileMetadata.swift", "NativeRPCMethodDefinitions.swift",
             "RPCMethod.swift", "BuildStamp.swift", "FileTransferRPCMethods.swift", "FileTransferStore.swift", "FileTransferProgress.swift", "TransferFileRoute.swift", "DevelopmentRPCMethods.swift",
             "MinisHandoffPolicy.swift", "NativeDeviceReadiness.swift", "NativeAutomationSession.swift", "ServiceKeepAwakePolicy.swift", "QuietLease.swift", "QuietCallback.swift", "QuietControl.swift", "QuietModeStore.swift", "QuietRPCMethodDefinitions.swift", "QuietDiagnostics.swift", "QuietForegroundRestorationPolicy.swift", "ShadeArtifact.swift"
