@@ -1,4 +1,4 @@
-# Native18 screenshot orientation candidate
+# Native18 screenshot orientation fix
 
 Base: Native17 source `94fded5c19337b89122592ac5f4d522b99aac3a3`.
 Candidate branch: `sol/orientation-fix-20261101`.
@@ -72,12 +72,23 @@ uses Xcode 16.4 and now also uploads `screen-capture-image-tests.log`.
 The simulator script selects an already installed iPhone Simulator; it does not
 download a runtime or connect to a physical phone.
 
-Local Windows validation on 2026-11-01: the 11 build-manifest Python tests passed;
-the YAML files parsed, test source paths resolved, version metadata agreed on
-1.98.18 / build 18, shell scripts passed `bash -n`, and `git diff --check` passed.
-Swift, UIKit and xcodebuild were unavailable locally. The nine new Swift test
-methods have therefore been authored but not run in this workspace. No build,
-push, workflow dispatch, signing, install or phone interaction was performed.
+Local Windows validation on 2026-11-01 passed the 11 build-manifest Python tests,
+YAML/path/version checks, `bash -n`, and `git diff --check`.
+The subsequent [macOS build](https://github.com/krkr521/iCTRL/actions/runs/41287571719)
+for source `61c64805dcdabdb567d47e3cf2cb377634f5d557` passed 160 Swift policy tests
+(including the five geometry tests), all four UIKit test methods, and 189
+continuous-drag checks before producing both Native18 IPA packages. The UIKit
+cases exercise all eight image orientations, PNG/JPEG and OCR normalization.
+
+After the user re-signed and overwrote Main and Runner through the existing
+SideStore identity, both installed versions independently reported 1.98.18 (18),
+and the authenticated runtime reported 1.98.18-krkr.native18. On a physical phone,
+the user rotated Calculator portrait to landscape and back to portrait on the
+same Runner instance. PNG and JPEG at scale 1 decoded to 402x874, 874x402 and
+402x874 respectively; JSON pixel/point dimensions agreed with the images, and
+landscape OCR reported 874x402 points. A normal native task lease ended cleanly
+after each capture. Physical landscape touch mapping and long background uptime
+remain separate, untested acceptance items.
 
 ## Installation and acceptance route
 
