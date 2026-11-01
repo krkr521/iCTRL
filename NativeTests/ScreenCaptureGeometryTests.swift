@@ -45,7 +45,7 @@ final class ScreenCaptureGeometryTests: XCTestCase {
             XCTAssertNil(ScreenCaptureGeometry(imageSize: CGSize(width: 402, height: 874), imageScale: 3, deviceScale: scale))
         }
         XCTAssertNil(ScreenCaptureGeometry(imageSize: .zero, imageScale: 3, deviceScale: 3))
-        XCTAssertNil(ScreenCaptureGeometry(imageSize: CGSize(width: .infinity, height: 874), imageScale: 3, deviceScale: 3))
+        XCTAssertNil(ScreenCaptureGeometry(imageSize: CGSize(width: CGFloat.infinity, height: 874), imageScale: 3, deviceScale: 3))
     }
 
     func testVisionBoxUsesLandscapePointsAndTopLeftOrigin() throws {
